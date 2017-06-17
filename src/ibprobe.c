@@ -1,14 +1,13 @@
-#include <infiniband/driver.h>
+#include <infiniband_wd/driver.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
 #include <malloc.h>
 #include <assert.h>
 #include <mpi.h>
-
-#include <arpa/inet.h>
 
 #define NZ(STATEMENT) assert(STATEMENT != NULL)
 #define ZERO(STATEMENT) assert(STATEMENT == 0)
@@ -52,7 +51,7 @@ static struct ibv_cq *pp_cq(struct pingpong_context *ctx)
   return ctx->cq;
 }
 
-#define PAGE_SIZE (256*1024)
+#define PAGE_SIZE (1024*1024)
 
 int pp_get_port_info(struct ibv_context *context, int port,
              struct ibv_port_attr *attr)
@@ -132,9 +131,9 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev, int size,
     }
 
     ibv_query_qp(ctx->qp, &attr, IBV_QP_CAP, &init_attr);
-    if (init_attr.cap.max_inline_data >= size) {
-      ctx->send_flags |= IBV_SEND_INLINE;
-    }
+    //if (init_attr.cap.max_inline_data >= size) {
+    //  ctx->send_flags |= IBV_SEND_INLINE;
+    //}
   }
 
   {
@@ -414,6 +413,8 @@ int main(int argc, char *argv[])
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
   assert(nprocs == 2);
 
+  srand(rank * time(NULL));
+
   struct ibv_device       **dev_list;
   struct ibv_device       *ib_dev;
   struct pingpong_context *ctx;
@@ -422,8 +423,8 @@ int main(int argc, char *argv[])
   struct timeval           start, end;
   int                      ib_port = 1;
   unsigned int             size = 4096;
-  enum ibv_mtu             mtu = IBV_MTU_2048;
-  unsigned int             rx_depth = 500;
+  enum ibv_mtu             mtu = IBV_MTU_1024;
+  unsigned int             rx_depth = 64;
   unsigned int             iters = 1000;
   int                      use_event = 0;
   int                      routs;
@@ -477,9 +478,8 @@ int main(int argc, char *argv[])
 
   my_dest.qpn = ctx->qp->qp_num;
   my_dest.psn = rand() & 0xffffff;
-  inet_ntop(AF_INET6, &my_dest.gid, gid, sizeof gid);
-  printf("rank %d local address:  LID 0x%04x, QPN 0x%06x, PSN 0x%06x, GID %s\n",
-         rank, my_dest.lid, my_dest.qpn, my_dest.psn, gid);
+  printf("rank %d local address:  LID 0x%04x, QPN 0x%06x, PSN 0x%06x\n",
+         rank, my_dest.lid, my_dest.qpn, my_dest.psn);
 
   {
     int q = (rank==0?1:0);
@@ -487,14 +487,10 @@ int main(int argc, char *argv[])
                 &rem_dest, sizeof(rem_dest), MPI_CHAR, q, SEND_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
   }
 
-  inet_ntop(AF_INET6, &rem_dest.gid, gid, sizeof gid);
-  printf("  remote address: LID 0x%04x, QPN 0x%06x, PSN 0x%06x, GID %s\n",
-         rem_dest.lid, rem_dest.qpn, rem_dest.psn, gid);
+  printf("  remote address: LID 0x%04x, QPN 0x%06x, PSN 0x%06x\n",
+         rem_dest.lid, rem_dest.qpn, rem_dest.psn);
 
-  if (rank == 0)
-    if (pp_connect_ctx(ctx, ib_port, my_dest.psn, mtu, sl, &rem_dest,
-          gidx))
-      return 1;
+  ZERO(pp_connect_ctx(ctx, ib_port, my_dest.psn, mtu, sl, &rem_dest, gidx));
 
   ctx->pending = PINGPONG_RECV_WRID;
 
@@ -526,13 +522,14 @@ int main(int argc, char *argv[])
     } while (ne < 1);
 
     for (i = 0; i < ne; ++i) {
+      //fprintf(stderr, "%d> parsing WC %d/%d id=%d\n", rank, i, ne, wc[i].wr_id);
       ret = parse_single_wc(ctx, &scnt, &rcnt, &routs,
                 iters,
                 wc[i].wr_id,
                 wc[i].status,
                 0);
       if (ret) {
-        fprintf(stderr, "parse WC failed %d\n", ne);
+        fprintf(stderr, "%d> parse WC failed %d\n", rank, ne);
         return 1;
       }
     }
