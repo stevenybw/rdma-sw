@@ -67,8 +67,7 @@ int pp_get_port_info(struct ibv_context *context, int port,
 }
 
 static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
-              int tx_depth, int rx_depth, int port,
-              int use_event)
+              int tx_depth, int rx_depth, int port)
 {
   struct pingpong_context *ctx;
   int access_flags = IBV_ACCESS_LOCAL_WRITE;
@@ -145,7 +144,7 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
     ibv_query_qp(ctx->qp, &attr, IBV_QP_CAP, &init_attr);
     if (init_attr.cap.max_inline_data >= sizeof(u64Int)) {
       ctx->send_flags |= IBV_SEND_INLINE;
-      fprintf(stderr, "%d use IBV_SEND_INLINE mode\n");
+      fprintf(stderr, "use IBV_SEND_INLINE mode\n");
     }
   }
 
@@ -165,36 +164,6 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
       fprintf(stderr, "Failed to modify QP to INIT\n");
       goto clean_qp;
     }
-  }
-
-  {
-    struct ibv_sge* tx_sge = (struct ibv_sge*) malloc(tx_depth * sizeof(struct ibv_sge));
-    struct ibv_sge* rx_sge = (struct ibv_sge*) malloc(rx_depth * sizeof(struct ibv_sge));
-    struct ibv_send_wr* send_wr = (struct ibv_send_wr*) malloc(tx_depth * sizeof(struct ibv_send_wr)); 
-    struct ibv_recv_wr* recv_wr = (struct ibv_recv_wr*) malloc(rx_depth * sizeof(struct ibv_recv_wr));
-    NZ(tx_sge); NZ(rx_sge); NZ(send_wr); NZ(recv_wr);
-    int i;
-    for(i=0; i<tx_depth-1; i++) {
-      send_wr[i].next = &send_wr[i+1];
-      send_wr[i].sg_list = &tx_sge[i];
-      send_wr[i].num_sge = 1;
-    }
-    send_wr[tx_depth-1].next = NULL;
-    send_wr[tx_depth-1].sg_list = &tx_sge[tx_depth-1];
-    send_wr[tx_depth-1].num_sge = 1;
-
-    for(i=0; i<rx_depth-1; i++) {
-      recv_wr[i].next = &recv_wr[i+1];
-      recv_wr[i].sg_list = &rx_sge[i];
-      recv_wr[i].num_sge = 1;
-    }
-    recv_wr[rx_depth-1].next = NULL;
-    recv_wr[rx_depth-1].sg_list = &rx_sge[rx_depth-1];
-    recv_wr[rx_depth-1].num_sge = 1;
-    ctx->tx_sge = tx_sge;
-    ctx->rx_sge = rx_sge;
-    ctx->send_wr = send_wr;
-    ctx->recv_wr = recv_wr;
   }
 
   return ctx;
@@ -277,6 +246,7 @@ static int pp_post_recv(struct pingpong_context *ctx, int n)
   };
   struct ibv_recv_wr wr = {
     .wr_id      = PINGPONG_RECV_WRID,
+    .next       = NULL,
     .sg_list    = &list,
     .num_sge    = 1,
   };
@@ -367,6 +337,7 @@ static int pp_post_send(struct pingpong_context *ctx)
   };
   struct ibv_send_wr wr = {
     .wr_id      = PINGPONG_SEND_WRID,
+    .next       = NULL,
     .sg_list    = &list,
     .num_sge    = 1,
     .opcode     = IBV_WR_SEND,
@@ -376,16 +347,18 @@ static int pp_post_send(struct pingpong_context *ctx)
 
   u64Int* tx_buf = ctx->tx_buf;
   for(i=0; i<tx_depth; i++) {
-    fprintf(stderr, "ibv_post_sending %d-th element\n", i);
+    printf("ibv_post_sending %d-th element\n", i);
     tx_buf[i] = i;
     wr.wr_id = i | PINGPONG_SEND_WRID;
     list.addr = (uint64_t) &tx_buf[i];
     list.length = sizeof(u64Int);
-    if(ibv_post_send(ctx->qp, &wr, &bad_wr))
-      fprintf(stderr, "ibv_post_send returned nz\n");
+    asm("memb\n");
+    if(ibv_post_send(ctx->qp, &wr, &bad_wr)) {
+      printf("ibv_post_send returned nz\n");
       return 1;
+    }
     if(bad_wr) {
-      fprintf(stderr, "bad_wr\n");
+      printf("bad_wr\n");
       return 2;
     }
   }
@@ -456,13 +429,9 @@ int main(int argc, char *argv[])
   int                      ib_port = 1;
   // unsigned int             size = 4096;
   enum ibv_mtu             mtu = IBV_MTU_1024;
-  unsigned int             tx_depth = 128;
-  unsigned int             rx_depth = 128;
+  unsigned int             tx_depth = 32;
+  unsigned int             rx_depth = 32;
   unsigned int             iters = 1;
-  int                      use_event = 0;
-  int                      routs;
-  int                      rcnt, scnt;
-  int                      num_cq_events = 0;
   int                      sl = 0;
   int                      gidx = -1;
   char                     gid[33];
@@ -479,11 +448,11 @@ int main(int argc, char *argv[])
     return 1;
   }
 
-  ctx = pp_init_ctx(ib_dev, tx_depth, rx_depth, ib_port, use_event);
+  ctx = pp_init_ctx(ib_dev, tx_depth, rx_depth, ib_port);
   if (!ctx)
     return 1;
 
-  routs = pp_post_recv(ctx, ctx->rx_depth);
+  int routs = pp_post_recv(ctx, ctx->rx_depth);
   if (routs < ctx->rx_depth) {
     fprintf(stderr, "Couldn't post receive (%d)\n", routs);
     return 1;
@@ -532,21 +501,22 @@ int main(int argc, char *argv[])
 
   int N;
   while (N < iters) {
-    fprintf(stderr, "%d> iter %d\n", rank, N);
+    printf("%d> iter %d\n", rank, N);
     int ret;
     int ne, i;
-    struct ibv_wc wc[1024];
+    struct ibv_wc wc[64];
 
     if (rank == 0) {
       int scnt = 0;
       int err;
+      fprintf(stderr, "%d> Ready to post send (errno=%d, reason=%s)\n", rank, errno, strerror(errno));
       err = pp_post_send(ctx);
       if (err != 0) {
         fprintf(stderr, "Couldn't post send (return %d, errno=%d, reason=%s)\n", err, errno, strerror(errno));
         return 1;
       }
       while(1) {
-        ne = ibv_poll_cq(ctx->tx_cq, 1024, wc);
+        ne = ibv_poll_cq(ctx->tx_cq, 64, wc);
         if (ne < 0) {
           fprintf(stderr, "poll TX CQ failed %d\n", ne);
           return 1;
@@ -566,7 +536,7 @@ int main(int argc, char *argv[])
     if (rank == 1) {
       int rcnt = 0;
       while(1) {
-        ne = ibv_poll_cq(ctx->rx_cq, 1024, wc);
+        ne = ibv_poll_cq(ctx->rx_cq, 64, wc);
         if (ne < 0) {
           fprintf(stderr, "poll TX CQ failed %d\n", ne);
           return 1;
@@ -575,33 +545,15 @@ int main(int argc, char *argv[])
           rcnt += ne;
           fprintf(stderr, "%d>   received %d/%d\n", rank, ne, rx_depth);
           if(rcnt == rx_depth) {
+            routs = pp_post_recv(ctx, ctx->rx_depth);
+            if (routs < ctx->rx_depth) {
+              fprintf(stderr, "Couldn't post receive (%d)\n", routs);
+              return 1;
+            }
+            fprintf(stderr, "%d>   next iter\n", rank);
             break;
           }
         }
-        /*
-        if (ne >= 1) {
-          for (i = 0; i < ne; ++i) {
-            uint64_t wr_id = wc[i].wr_id;
-            enum ibv_wc_status status = wc[i].status;
-            if (status != IBV_WC_SUCCESS) {
-              fprintf(stderr, "Failed status %s (%d) for wr_id %d\n",
-                ibv_wc_status_str(status),
-                status, (int)wr_id);
-              return 1;
-            }
-
-            if(wr_id & PINGPONG_SEND_WRID) {
-              ++(scnt);
-            } else {
-              ++(rcnt)；
-            }
-            if (ret) {
-              fprintf(stderr, "%d> parse WC failed %d\n", rank, ne);
-              return 1;
-            }
-          }
-        }
-        */
       }
       MPI_Barrier(MPI_COMM_WORLD);
       N++;
