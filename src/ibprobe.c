@@ -145,6 +145,7 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
     ibv_query_qp(ctx->qp, &attr, IBV_QP_CAP, &init_attr);
     if (init_attr.cap.max_inline_data >= sizeof(u64Int)) {
       ctx->send_flags |= IBV_SEND_INLINE;
+      fprintf(stderr, "%d use IBV_SEND_INLINE mode\n");
     }
   }
 
@@ -375,6 +376,7 @@ static int pp_post_send(struct pingpong_context *ctx)
 
   u64Int* tx_buf = ctx->tx_buf;
   for(i=0; i<tx_depth; i++) {
+    fprintf(stderr, "ibv_post_sending %d-th element\n", i);
     tx_buf[i] = i;
     wr.wr_id = i | PINGPONG_SEND_WRID;
     list.addr = (uint64_t) &tx_buf[i];
@@ -543,9 +545,8 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Couldn't post send (return %d, errno=%d, reason=%s)\n", err, errno, strerror(errno));
         return 1;
       }
-      // no cq for inline message?
       while(1) {
-        ne = ibv_poll_cq(ctx->rx_cq, 1024, wc);
+        ne = ibv_poll_cq(ctx->tx_cq, 1024, wc);
         if (ne < 0) {
           fprintf(stderr, "poll TX CQ failed %d\n", ne);
           return 1;
