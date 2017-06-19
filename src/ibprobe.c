@@ -18,7 +18,7 @@
 
 typedef unsigned long long u64Int;
 
-#define BUF_SIZE (1024*sizeof(u64Int))
+#define BUF_SIZE (1024*1024*sizeof(u64Int))
 
 enum {
   PINGPONG_RECV_WRID = 0,
@@ -347,8 +347,8 @@ static int pp_post_send(struct pingpong_context *ctx)
 
   u64Int* tx_buf = ctx->tx_buf;
   for(i=0; i<tx_depth; i++) {
-    printf("ibv_post_sending %d-th element\n", i);
-    tx_buf[i] = i;
+    // printf("ibv_post_sending %d-th element\n", i);
+    // tx_buf[i] = i;
     wr.wr_id = i | PINGPONG_SEND_WRID;
     list.addr = (uint64_t) &tx_buf[i];
     list.length = sizeof(u64Int);
@@ -428,10 +428,10 @@ int main(int argc, char *argv[])
   struct timeval           start, end;
   int                      ib_port = 1;
   // unsigned int             size = 4096;
-  enum ibv_mtu             mtu = IBV_MTU_1024;
-  unsigned int             tx_depth = 32;
-  unsigned int             rx_depth = 32;
-  unsigned int             iters = 1;
+  enum ibv_mtu             mtu = IBV_MTU_256;
+  unsigned int             tx_depth = 128;
+  unsigned int             rx_depth = 128;
+  unsigned int             iters = 1000;
   int                      sl = 0;
   int                      gidx = -1;
   char                     gid[33];
@@ -499,9 +499,18 @@ int main(int argc, char *argv[])
     return 1;
   }
 
+  {
+    int i;
+    u64Int* tx_buf = ctx->tx_buf;
+    for(i=0; i<tx_depth; i++) {
+      tx_buf[i] = i;
+    }
+  }
+
+
   int N;
   while (N < iters) {
-    printf("%d> iter %d\n", rank, N);
+    //printf("%d> iter %d\n", rank, N);
     int ret;
     int ne, i;
     struct ibv_wc wc[64];
@@ -509,7 +518,7 @@ int main(int argc, char *argv[])
     if (rank == 0) {
       int scnt = 0;
       int err;
-      fprintf(stderr, "%d> Ready to post send (errno=%d, reason=%s)\n", rank, errno, strerror(errno));
+      //fprintf(stderr, "%d> Ready to post send (errno=%d, reason=%s)\n", rank, errno, strerror(errno));
       err = pp_post_send(ctx);
       if (err != 0) {
         fprintf(stderr, "Couldn't post send (return %d, errno=%d, reason=%s)\n", err, errno, strerror(errno));
@@ -523,7 +532,7 @@ int main(int argc, char *argv[])
         }
         if(ne >= 1) {
           scnt += ne;
-          fprintf(stderr, "%d>   sent %d/%d\n", rank, ne, tx_depth);
+          //fprintf(stderr, "%d>   sent %d/%d\n", rank, ne, tx_depth);
           if(scnt == tx_depth) {
             break;
           }
@@ -543,14 +552,14 @@ int main(int argc, char *argv[])
         }
         if (ne >= 1) {
           rcnt += ne;
-          fprintf(stderr, "%d>   received %d/%d\n", rank, ne, rx_depth);
+          //fprintf(stderr, "%d>   received %d/%d\n", rank, ne, rx_depth);
           if(rcnt == rx_depth) {
             routs = pp_post_recv(ctx, ctx->rx_depth);
             if (routs < ctx->rx_depth) {
               fprintf(stderr, "Couldn't post receive (%d)\n", routs);
               return 1;
             }
-            fprintf(stderr, "%d>   next iter\n", rank);
+            //fprintf(stderr, "%d>   next iter\n", rank);
             break;
           }
         }
@@ -559,6 +568,22 @@ int main(int argc, char *argv[])
       N++;
     }
   }
+#define PINGPONG_VERIFY
+#ifdef PINGPONG_VERIFY
+  printf("VERIFYING...\n");
+  if(rank == 1) {
+    int i;
+    u64Int* rx_buf = (u64Int*) ctx->rx_buf;
+    for(i=0; i<rx_depth; i++) {
+      if(rx_buf[i] != i) {
+        printf("VERIFY FAILED: rx_buf[%d] == %llu\n", i, rx_buf[i]);
+      }
+    }
+  }
+#endif
+
+  printf("%d Finished\n", rank);
+  MPI_Barrier(MPI_COMM_WORLD);
 
   if (gettimeofday(&end, NULL)) {
     perror("gettimeofday");
@@ -570,9 +595,9 @@ int main(int argc, char *argv[])
       (end.tv_usec - start.tv_usec);
     long long bytes = (long long) tx_depth * iters * sizeof(u64Int);
 
-    printf("%lld bytes in %.2f seconds = %.2f Mbit/sec = %.2f Mmesg/sec\n",
-           bytes, usec / 1000000., bytes * 8. / usec, 1.0*tx_depth*iters/usec);
-    printf("%d iters in %.2f seconds = %.2f usec/iter\n",
+    printf("%lld bytes in %.6f seconds = %.6f MB/sec = %.6f Mmesg/sec\n",
+           bytes, usec / 1000000., 1.0 * bytes / usec, 1.0*tx_depth*iters/usec);
+    printf("%d iters in %.6f seconds = %.6f usec/iter\n",
            iters, usec / 1000000., usec / iters);
   }
 
