@@ -366,6 +366,39 @@ static int pp_post_send(struct pingpong_context *ctx)
   return 0;
 }
 
+static int pp_post_send_ack(struct pingpong_context *ctx)
+{
+  struct ibv_sge list = {
+    .addr = (uintptr_t) ctx->tx_buf,
+    .lkey = ctx->tx_mr->lkey
+  };
+  struct ibv_send_wr wr = {
+    .wr_id      = PINGPONG_SEND_WRID,
+    .next       = NULL,
+    .sg_list    = &list,
+    .num_sge    = 1,
+    .opcode     = IBV_WR_SEND,
+    .send_flags = ctx->send_flags,
+  };
+  struct ibv_send_wr *bad_wr = NULL;
+
+  u64Int* tx_buf = ctx->tx_buf;
+  wr.wr_id = 0 | PINGPONG_SEND_WRID;
+  list.addr = (uint64_t) &tx_buf[0];
+  list.length = sizeof(u64Int);
+  if(ibv_post_send(ctx->qp, &wr, &bad_wr)) {
+    printf("ibv_post_send returned nz\n");
+    return 1;
+  }
+  if(bad_wr) {
+    printf("bad_wr\n");
+    return 2;
+  }
+
+  return 0;
+}
+
+
 static int pp_close_ctx(struct pingpong_context *ctx)
 {
   if (ibv_destroy_qp(ctx->qp)) {
@@ -431,7 +464,8 @@ int main(int argc, char *argv[])
   enum ibv_mtu             mtu = IBV_MTU_256;
   unsigned int             tx_depth = 128;
   unsigned int             rx_depth = 128;
-  unsigned int             iters = 1000;
+  unsigned int             iters = 5000;
+  unsigned int             skip  = 100;
   int                      sl = 0;
   int                      gidx = -1;
   char                     gid[33];
@@ -494,11 +528,6 @@ int main(int argc, char *argv[])
 
   ZERO(pp_connect_ctx(ctx, ib_port, my_dest.psn, mtu, sl, &rem_dest, gidx));
 
-  if (gettimeofday(&start, NULL)) {
-    perror("gettimeofday");
-    return 1;
-  }
-
   {
     int i;
     u64Int* tx_buf = ctx->tx_buf;
@@ -507,13 +536,24 @@ int main(int argc, char *argv[])
     }
   }
 
+  if (gettimeofday(&start, NULL)) {
+    perror("gettimeofday");
+    return 1;
+  }
 
   int N;
-  while (N < iters) {
-    //printf("%d> iter %d\n", rank, N);
+  while (N < (iters + skip)) {
+    // printf("%d> iter %d\n", rank, N);
     int ret;
     int ne, i;
     struct ibv_wc wc[64];
+
+    if(N == skip) {
+      if (gettimeofday(&start, NULL)) {
+        perror("gettimeofday");
+        return 1;
+      }
+    }
 
     if (rank == 0) {
       int scnt = 0;
@@ -524,6 +564,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Couldn't post send (return %d, errno=%d, reason=%s)\n", err, errno, strerror(errno));
         return 1;
       }
+      // wait for send to complete
       while(1) {
         ne = ibv_poll_cq(ctx->tx_cq, 64, wc);
         if (ne < 0) {
@@ -538,11 +579,20 @@ int main(int argc, char *argv[])
           }
         }
       }
-      MPI_Barrier(MPI_COMM_WORLD);
+      pp_post_recv(ctx, 1);
+      // wait for ack message
+      while(1) {
+        ne = ibv_poll_cq(ctx->rx_cq, 64, wc);
+        if (ne < 0) {
+          fprintf(stderr, "poll RX CQ failed\n");
+          return 1;
+        }
+        if(ne >= 1) {
+          break;
+        }
+      }
       N++;
-    }
-
-    if (rank == 1) {
+    } else if (rank == 1) {
       int rcnt = 0;
       while(1) {
         ne = ibv_poll_cq(ctx->rx_cq, 64, wc);
@@ -564,7 +614,18 @@ int main(int argc, char *argv[])
           }
         }
       }
-      MPI_Barrier(MPI_COMM_WORLD);
+      pp_post_send_ack(ctx);
+      // wait for ack message
+      while(1) {
+        ne = ibv_poll_cq(ctx->tx_cq, 64, wc);
+        if (ne < 0) {
+          fprintf(stderr, "poll RX CQ failed\n");
+          return 1;
+        }
+        if(ne >= 1) {
+          break;
+        }
+      }
       N++;
     }
   }
