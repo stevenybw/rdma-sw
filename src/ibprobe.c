@@ -28,6 +28,8 @@ enum {
 };
 
 struct pingpong_context {
+  int rank;
+  int nprocs;
   struct ibv_context  *context;
   struct ibv_pd   *pd;
   struct ibv_mr   *tx_mr;
@@ -213,8 +215,11 @@ static int pp_post_recv(struct pingpong_context *ctx, int n)
     wr.wr_id = i | PINGPONG_RECV_WRID;
     list.addr = (uint64_t) &rx_buf[i];
     list.length = sizeof(u64Int);
-    if (ibv_post_recv(ctx->qp, &wr, &bad_wr))
+    int err;
+    if (err = ibv_post_recv(ctx->qp, &wr, &bad_wr)) {
+      fprintf(stderr, "%d> ibv_post_recv returns %d\n", ctx->rank, err);
       return i;
+    }
     if (bad_wr) {
       fprintf(stderr, "post_recv failed\n");
       break;
@@ -439,6 +444,8 @@ int main(int argc, char *argv[])
   ctx = pp_init_ctx(ib_dev, tx_depth, rx_depth, ib_port);
   if (!ctx)
     return 1;
+  ctx->rank = rank;
+  ctx->nprocs = nprocs;
 
   int routs = pp_post_recv(ctx, ctx->rx_depth);
   if (routs < ctx->rx_depth) {
@@ -510,6 +517,7 @@ int main(int argc, char *argv[])
     }
 
     if (rank == 0) {
+      pp_post_recv(ctx, 1);
       int scnt = 0;
       int err;
       //fprintf(stderr, "%d> Ready to post send (errno=%d, reason=%s)\n", rank, errno, strerror(errno));
@@ -527,13 +535,12 @@ int main(int argc, char *argv[])
         }
         if(ne >= 1) {
           scnt += ne;
-          //fprintf(stderr, "%d>   sent %d/%d\n", rank, ne, tx_depth);
+          // fprintf(stderr, "%d>   sent %d/%d\n", rank, ne, tx_depth);
           if(scnt == tx_depth) {
             break;
           }
         }
       }
-      pp_post_recv(ctx, 1);
       // wait for ack message
       while(1) {
         ne = ibv_poll_cq(ctx->rx_cq, 64, wc);
@@ -563,7 +570,6 @@ int main(int argc, char *argv[])
               fprintf(stderr, "Couldn't post receive (%d)\n", routs);
               return 1;
             }
-            //fprintf(stderr, "%d>   next iter\n", rank);
             break;
           }
         }
@@ -582,6 +588,7 @@ int main(int argc, char *argv[])
       }
       N++;
     }
+    // fprintf(stderr, "%d>   next iter\n", rank);
   }
 #define PINGPONG_VERIFY
 #ifdef PINGPONG_VERIFY
