@@ -14,8 +14,6 @@
 #define ZERO(STATEMENT) assert(STATEMENT == 0)
 #define SHOW(FMT, OBJECT, ATTRIBUTE) do{printf("  %s = " FMT "\n", #ATTRIBUTE, OBJECT.ATTRIBUTE);} while(0)
 
-//#define NUM_CQE 1024
-
 typedef unsigned long long u64Int;
 
 #define BUF_SIZE (1024*1024*sizeof(u64Int))

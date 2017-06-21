@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <mpi.h>
 
+#define NUM_CQE 1024
 #define NZ(STATEMENT) assert(STATEMENT != NULL)
 #define ZERO(STATEMENT) assert(STATEMENT == 0)
 #define SHOW(FMT, OBJECT, ATTRIBUTE) do{printf("  %s = " FMT "\n", #ATTRIBUTE, OBJECT.ATTRIBUTE);} while(0)
@@ -30,15 +31,10 @@ void show_query_device(struct ibv_context *context) {
   ZERO(ibv_query_device(context, &device_attr));
   int device_cap_flags = device_attr.device_cap_flags;
   printf("  DEVICE_CAP_FLAGS:\n");
-  if(device_cap_flags | IBV_DEVICE_XRC) {
+  if(device_cap_flags | IBV_DEVICE_RAW_MULTI) {
     printf("    IBV_DEVICE_RAW_MULTI = 1\n");
   } else {
     printf("    IBV_DEVICE_RAW_MULTI = 0\n");
-  }
-  if(device_cap_flags | IBV_DEVICE_XRC) {
-    printf("    IBV_DEVICE_XRC = 1\n");
-  } else {
-    printf("    IBV_DEVICE_XRC = 0\n");
   }
   SHOW("%s", device_attr, fw_ver);
   SHOW("%llu", device_attr, max_mr_size);
@@ -119,4 +115,3 @@ int main(void) {
 
   return 0;
 }
-*/
