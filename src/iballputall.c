@@ -267,11 +267,11 @@ static int pp_connect_ctx(struct pingpong_context *ctx, int port, enum ibv_mtu m
   int nprocs = ctx->nprocs;
 
   for(i=0; i<nprocs; i++) {
-    ibv_qp*   qp         = ctx->qp_list[i];
-    int       local_psn  = local_psn_list[i];
-    int       remote_lid = remote_lid_list[i];
-    int       remote_psn = remote_psn_list[i];
-    int       remote_qpn = remote_qpn_list[i];
+    struct ibv_qp* qp         = ctx->qp_list[i];
+    int            local_psn  = local_psn_list[i];
+    int            remote_lid = remote_lid_list[i];
+    int            remote_psn = remote_psn_list[i];
+    int            remote_qpn = remote_qpn_list[i];
 
     struct ibv_qp_attr attr = {
       .qp_state   = IBV_QPS_RTR,
@@ -307,7 +307,7 @@ static int pp_connect_ctx(struct pingpong_context *ctx, int port, enum ibv_mtu m
     attr.rnr_retry      = 7;
     attr.sq_psn     = local_psn;
     attr.max_rd_atomic  = 1;
-    if (ibv_modify_qp(ctx->qp, &attr,
+    if (ibv_modify_qp(qp, &attr,
           IBV_QP_STATE              |
           IBV_QP_TIMEOUT            |
           IBV_QP_RETRY_CNT          |
@@ -330,7 +330,7 @@ static int pp_post_send_1024(struct pingpong_context* ctx) {
   u64Int* tx_buf  = (u64Int*) ctx->tx_buf;
 
   struct ibv_sge list = {
-    .addr   = NULL,
+    .addr   = 0,
     .length = sizeof(u64Int),
     .lkey   = ctx->tx_mr->lkey,
   };
