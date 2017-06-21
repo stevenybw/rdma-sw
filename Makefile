@@ -11,6 +11,9 @@ TARGET := src/ibprobe #src/devinfo
 src/ibprobe: src/ibprobe.c
 	mpicc -o src/ibprobe src/ibprobe.c -I/usr/sw-mpp/include
 
+src/ibstat: src/ibstat.c
+	mpicc -o src/ibstat src/ibstat.c -I/usr/sw-mpp/include
+
 all: $(TARGET)
 
 clean:
