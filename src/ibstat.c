@@ -10,7 +10,7 @@
 #include <assert.h>
 #include <mpi.h>
 
-#define NUM_CQE 1024
+#define NUM_CQE 4096
 #define NZ(STATEMENT) assert(STATEMENT != NULL)
 #define ZERO(STATEMENT) assert(STATEMENT == 0)
 #define SHOW(FMT, OBJECT, ATTRIBUTE) do{printf("  %s = " FMT "\n", #ATTRIBUTE, OBJECT.ATTRIBUTE);} while(0)
@@ -68,7 +68,7 @@ void show_query_first_port(struct ibv_context *context) {
   }
 }
 
-#define BUFFER_BYTES (64*1024*1024)
+#define BUFFER_BYTES (512*1024*1024)
 #define MEMREGION_PROT (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC | IBV_ACCESS_MW_BIND)
 char gbuffer[BUFFER_BYTES]  __attribute((__aligned__(128)));
 
@@ -100,13 +100,30 @@ int main(void) {
     mr = ibv_reg_mr(pd, gbuffer, BUFFER_BYTES, MEMREGION_PROT);
     NZ(mr);
     
-    struct ibv_qp_init_attr qp_init_attr;
-    qp_init_attr.send_cq = cq;
-    qp_init_attr.recv_cq = cq;
-    struct ibv_qp* qp;
-    qp = ibv_create_qp(pd, &qp_init_attr);
+    struct ibv_qp_init_attr qp_init_attr = {
+      .send_cq = cq,
+      .recv_cq = cq,
+      .cap = {
+        .max_send_wr = 128,
+        .max_recv_wr = 128,
+        .max_send_sge = 1,
+        .max_recv_sge = 1,
+      },
+      .qp_type = IBV_QPT_RC,
+    };
+
+    printf("try to allocate 1024 qps\n");
+    int i;
+    for(i=0; i<1024; i++) {
+      struct ibv_qp* qp;
+      qp = ibv_create_qp(pd, &qp_init_attr);
+      if(!qp) {
+        printf("ibv_create_qp failed at %d, errno=%d[%s]\n", i, errno, strerror(errno));
+      }
+    }
+    printf("OK\n");
+      
     
-    ZERO(ibv_destroy_qp(qp));
     ZERO(ibv_dereg_mr(mr));
     ZERO(ibv_destroy_cq(cq));
     ZERO(ibv_dealloc_pd(pd));

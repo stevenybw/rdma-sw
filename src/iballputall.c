@@ -111,7 +111,7 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
     goto clean_pd;
   }
 
-  ctx->cq = ibv_create_cq(ctx->context, 4096, NULL,
+  ctx->cq = ibv_create_cq(ctx->context, 512, NULL,
            NULL, 0);
 
   if (!ctx->cq) {
@@ -149,7 +149,6 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
       struct ibv_qp_init_attr init_attr = {
         .send_cq = ctx->cq,
         .recv_cq = ctx->cq,
-        .srq     = ctx->srq,
         .cap     = {
           .max_send_wr  = tx_depth,
           .max_send_sge = 1,
@@ -158,7 +157,7 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
       };
       qp = ibv_create_qp(ctx->pd, &init_attr);
       if (!qp)  {
-        fprintf(stderr, "Couldn't create QP\n");
+        fprintf(stderr, "Couldn't create QP[%d], errno=%d[%s]\n", i, errno, strerror(errno));
         goto clean_cq;
       }
       ibv_query_qp(qp, &attr, IBV_QP_CAP, &init_attr);
@@ -366,6 +365,7 @@ static int pp_post_send_1024(struct pingpong_context* ctx) {
   int i;
   int rank        = ctx->rank;
   int nprocs      = ctx->nprocs;
+  int scount = 0;
   int err;
   u64Int* tx_buf  = (u64Int*) ctx->tx_buf;
 
@@ -392,16 +392,20 @@ static int pp_post_send_1024(struct pingpong_context* ctx) {
 
   for(i=0; i<1024; i++) {
     int dest = i % nprocs;
-    list.addr = (uint64_t) &tx_buf[i];
-    if(err = ibv_post_send(ctx->qp_list[dest], &wr, &bad_wr)) {
-      LOGD("ibv_post_send returned %d\n", err);
-      return err;
+    if(dest != rank) {
+      list.addr = (uint64_t) &tx_buf[i];
+      if(err = ibv_post_send(ctx->qp_list[dest], &wr, &bad_wr)) {
+        LOGD("%d-th ibv_post_send returned %d, errno = %d[%s]\n", i, err, errno, strerror(errno));
+        return -1;
+      }
+      if(bad_wr) {
+        LOGD("bad_wr\n");
+        return -1;
+      }
     }
-    if(bad_wr) {
-      LOGD("bad_wr\n");
-      return -1;
-    }
+    scount++;
   }
+  return scount;
 }
 
 static int pp_close_ctx(struct pingpong_context *ctx)
@@ -456,7 +460,6 @@ int main(int argc, char *argv[])
   MPI_Init(NULL, NULL);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
-  assert(nprocs == 2);
 
   srand48(rank * time(NULL));
 
@@ -571,9 +574,9 @@ int main(int argc, char *argv[])
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  int N;
+  int N = 0;
   while (N < (iters + skip)) {
-    // printf("%d> iter %d\n", rank, N);
+    printf("%d> iter %d/%d\n", rank, N+1, iters + skip);
     int ret;
     int ne, i;
     struct ibv_wc wc[64];
@@ -585,7 +588,7 @@ int main(int argc, char *argv[])
       }
     }
 
-    ZERO(pp_post_send_1024(ctx));
+    int num_sent = pp_post_send_1024(ctx);
 
     int scnt = 0;
     int rcnt = 0;
@@ -609,7 +612,7 @@ int main(int argc, char *argv[])
           switch ((int) wr_id.tagid.tag) {
           case SEND_WRID:
             scnt++;
-            if(scnt == 1024) {
+            if(scnt == num_sent) {
               MPI_Ibarrier(MPI_COMM_WORLD, &b_req);
             }
             break;
