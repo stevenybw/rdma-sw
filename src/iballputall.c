@@ -111,7 +111,7 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
     goto clean_pd;
   }
 
-  ctx->cq = ibv_create_cq(ctx->context, 512, NULL,
+  ctx->cq = ibv_create_cq(ctx->context, 4096, NULL,
            NULL, 0);
 
   if (!ctx->cq) {
@@ -149,6 +149,7 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
       struct ibv_qp_init_attr init_attr = {
         .send_cq = ctx->cq,
         .recv_cq = ctx->cq,
+        .srq     = ctx->srq,
         .cap     = {
           .max_send_wr  = tx_depth,
           .max_send_sge = 1,
@@ -402,8 +403,8 @@ static int pp_post_send_1024(struct pingpong_context* ctx) {
         LOGD("bad_wr\n");
         return -1;
       }
+      scount++;
     }
-    scount++;
   }
   return scount;
 }
@@ -554,6 +555,24 @@ int main(int argc, char *argv[])
     LOGDS("    MPI_Allgather lid_list...\n");
     MPI_Allgather(&local_lid, 1, MPI_INT, remote_lid_list, 1, MPI_INT, MPI_COMM_WORLD);
     LOGDS("    MPI_Allgather Complete\n");
+
+#if 0
+    {
+      int i;
+      for(i=0; i<nprocs; i++) {
+        printf("    %d", remote_qpn_list[i]);
+      }
+      printf("\n");
+      for(i=0; i<nprocs; i++) {
+        printf("    %d", remote_psn_list[i]);
+      }
+      printf("\n");
+      for(i=0; i<nprocs; i++) {
+        printf("    %d", remote_lid_list[i]);
+      }
+      printf("\n");
+    }
+#endif
   }
 
   LOGDS("  establishing connection\n");
@@ -567,12 +586,13 @@ int main(int argc, char *argv[])
     }
   }
 
+  MPI_Barrier(MPI_COMM_WORLD);
+  LOGDS("  ready to communicate\n");
+
   if (gettimeofday(&start, NULL)) {
     perror("gettimeofday");
     return 1;
   }
-
-  MPI_Barrier(MPI_COMM_WORLD);
 
   int N = 0;
   while (N < (iters + skip)) {
@@ -589,6 +609,10 @@ int main(int argc, char *argv[])
     }
 
     int num_sent = pp_post_send_1024(ctx);
+    if (num_sent < 0) {
+      LOGD("pp_post_send failed\n");
+      return 1;
+    }
 
     int scnt = 0;
     int rcnt = 0;
@@ -600,6 +624,7 @@ int main(int argc, char *argv[])
         LOGD("poll CQ failed\n");
         return 1;
       } else if (ne >= 1) {
+        //LOGV("complete %d request\n", ne);
         int i;
         for(i=0; i<ne; i++) {
           union pingpong_wrid wr_id;
@@ -615,6 +640,7 @@ int main(int argc, char *argv[])
             if(scnt == num_sent) {
               MPI_Ibarrier(MPI_COMM_WORLD, &b_req);
             }
+            LOGV("send complete [%d/%d]\n", scnt, num_sent);
             break;
 
           case RECV_WRID:
@@ -624,6 +650,7 @@ int main(int argc, char *argv[])
               pp_post_recv_init(ctx);
               rcnt = 0;
             }
+            LOGV("recv complete [%d]\n", rcnt);
             break;
 
           default:
