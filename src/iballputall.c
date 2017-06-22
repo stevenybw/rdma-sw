@@ -30,22 +30,27 @@ union pingpong_wrid {
   uint64_t val;
 };
 
+struct rx_win_s {
+  struct ibv_mr *mr;
+  u64Int        *buf;
+  int            idx;
+  int            len;
+};
+
 struct pingpong_context {
   struct ibv_context  *context;
   struct ibv_pd   *pd;
   struct ibv_mr   *tx_mr;
-  struct ibv_mr   *rx_mr;
   struct ibv_cq   *cq;
   struct ibv_srq  *srq;
   struct ibv_qp  **qp_list;
+  struct rx_win_s  rx_win;
 
   int      rank;
   int      nprocs;
   void*    tx_buf;
-  void*    rx_buf;
   int      tx_depth;
   int      rx_depth;
-  int      rx_received;
   int      send_flags;
   struct ibv_port_attr     portinfo;
   uint64_t     completion_timestamp_mask;
@@ -66,29 +71,34 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
 {
   struct pingpong_context *ctx;
   int access_flags = IBV_ACCESS_LOCAL_WRITE;
+  u64Int         *rx_buf = NULL;
+  struct ibv_mr  *rx_mr  = NULL;
 
   ctx = malloc(sizeof(*ctx));
   if (!ctx)
     return NULL;
 
-  ctx->rank       = rank;
-  ctx->nprocs     = nprocs;
-  ctx->send_flags = IBV_SEND_SIGNALED;
-  ctx->tx_depth   = tx_depth;
-  ctx->rx_depth   = rx_depth;
+  ctx->rank        = rank;
+  ctx->nprocs      = nprocs;
+  ctx->send_flags  = IBV_SEND_SIGNALED;
+  ctx->tx_depth    = tx_depth;
+  ctx->rx_depth    = rx_depth;
+  ctx->rx_win.idx = -1;
+  ctx->rx_win.len = -1;
 
   size_t sendBufBytes = BUF_SIZE_PER_RANK * nprocs;
   size_t recvBufBytes = MAX_SRQ_WR * sizeof(u64Int);
   ctx->tx_buf     = memalign(PAGE_SIZE, sendBufBytes);
-  ctx->rx_buf     = memalign(PAGE_SIZE, recvBufBytes);
+  rx_buf          = memalign(PAGE_SIZE, recvBufBytes);
+  ctx->rx_win.buf = rx_buf;
 
-  if (!(ctx->tx_buf && ctx->rx_buf)) {
+  if (!(ctx->tx_buf && rx_buf)) {
     fprintf(stderr, "Couldn't allocate work buf.\n");
     goto clean_ctx;
   }
 
   memset(ctx->tx_buf, 0x7b, sendBufBytes);
-  memset(ctx->rx_buf, 0x7b, recvBufBytes);
+  memset(rx_buf, 0x7b, recvBufBytes);
 
   ctx->context = ibv_open_device(ib_dev);
   if (!ctx->context) {
@@ -104,9 +114,10 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
   }
 
   ctx->tx_mr = ibv_reg_mr(ctx->pd, ctx->tx_buf, sendBufBytes, access_flags);
-  ctx->rx_mr = ibv_reg_mr(ctx->pd, ctx->rx_buf, recvBufBytes, access_flags);
+  rx_mr = ibv_reg_mr(ctx->pd, rx_buf, recvBufBytes, access_flags);
+  ctx->rx_win.mr = rx_mr;
 
-  if (!(ctx->tx_mr && ctx->rx_mr)) {
+  if (!(ctx->tx_mr && rx_mr)) {
     fprintf(stderr, "Couldn't register MR\n");
     goto clean_pd;
   }
@@ -206,7 +217,7 @@ clean_cq:
 
 clean_mr:
   ibv_dereg_mr(ctx->tx_mr);
-  ibv_dereg_mr(ctx->rx_mr);
+  ibv_dereg_mr(ctx->rx_win.mr);
 
 clean_pd:
   ibv_dealloc_pd(ctx->pd);
@@ -216,7 +227,7 @@ clean_device:
 
 clean_buffer:
   free(ctx->tx_buf);
-  free(ctx->rx_buf);
+  free(ctx->rx_win.buf);
 
 clean_ctx:
   free(ctx);
@@ -226,12 +237,14 @@ clean_ctx:
 
 static int pp_post_recv_init(struct pingpong_context *ctx)
 {
-  u64Int* rx_buf = (u64Int*) ctx->rx_buf;
+  ctx->rx_win.idx = 0;
+  ctx->rx_win.len = MAX_SRQ_WR;
+  u64Int* rx_buf  = (u64Int*) ctx->rx_win.buf;
 
   struct ibv_sge list = {
     .addr = (uintptr_t) NULL,
     .length = sizeof(u64Int),
-    .lkey = ctx->rx_mr->lkey
+    .lkey = ctx->rx_win.mr->lkey
   };
   struct ibv_recv_wr wr = {
     .next       = NULL,
@@ -261,40 +274,93 @@ static int pp_post_recv_init(struct pingpong_context *ctx)
   return 0;
 }
 
-static int pp_post_recv_refill(struct pingpong_context *ctx, int id)
+static int pp_post_recv_refill(struct pingpong_context *ctx)
 {
-  u64Int* rx_buf = (u64Int*) ctx->rx_buf;
+  int          idx = ctx->rx_win.idx;
+  int          len = ctx->rx_win.len;
+  u64Int*   rx_buf = (u64Int*) ctx->rx_win.buf;
+
+  ctx->rx_win.len = MAX_SRQ_WR;
 
   struct ibv_sge list = {
-    .addr = (uintptr_t) &rx_buf[id],
+    .addr = (uintptr_t) 0,
     .length = sizeof(u64Int),
-    .lkey = ctx->rx_mr->lkey
+    .lkey = ctx->rx_win.mr->lkey
   };
 
   union pingpong_wrid wr_id = {
     .tagid = {
       .tag  = RECV_WRID,
-      .id   = id,
+      .id   = -1,
     }
   };
 
   struct ibv_recv_wr wr = {
-    .wr_id      = (uint64_t) wr_id.val,
+    .wr_id      = (uint64_t) 0,
     .next       = NULL,
     .sg_list    = &list,
     .num_sge    = 1,
   };
   struct ibv_recv_wr *bad_wr = NULL;
 
-  int err;
-  if (err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr)) {
-    return err;
-  }
-  if (bad_wr) {
-    LOGD("post_srq_recv has bad_wr\n");
-    return -1;
+  int i;
+  int num_recv = MAX_SRQ_WR - len;
+  int id = (idx + len) % MAX_SRQ_WR;
+  for(i=0; i<num_recv; i++) {
+    list.addr = (uintptr_t) &rx_buf[id];
+    wr_id.tagid.id = id;
+    wr.wr_id = wr_id.val;
+    int err;
+    if (err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr)) {
+      return err;
+    }
+    if (bad_wr) {
+      LOGD("post_srq_recv has bad_wr\n");
+      return -1;
+    }
+    id = (id + 1) % MAX_SRQ_WR;
   }
 
+  return 0;
+}
+
+
+static inline int pp_process(u64Int* buf, int idx, int len) {
+  return 0;
+}
+
+static inline int pp_on_recv(struct pingpong_context *ctx, int id) {
+  int err;
+  int idx = ctx->rx_win.idx;
+  int len = ctx->rx_win.len;
+  assert(idx == id);
+  idx = (idx + 1) % MAX_SRQ_WR;
+  len = len - 1;
+  ctx->rx_win.idx = idx;
+  ctx->rx_win.len = len;
+  if(len == 0) {
+    if(err = pp_process(ctx->rx_win.buf, idx, MAX_SRQ_WR)) {
+      return err;
+    }
+    if(err = pp_post_recv_refill(ctx)) {
+      return err;
+    }
+  }
+  return 0;
+}
+
+static inline int pp_on_flush(struct pingpong_context *ctx) {
+  int err;
+  int idx = ctx->rx_win.idx;
+  int len = ctx->rx_win.len;
+  int start = (idx + len) % MAX_SRQ_WR;
+  int i;
+  if(err = pp_process(ctx->rx_win.buf, idx, MAX_SRQ_WR - len)) {
+    return err;
+  }
+  if(err = pp_post_recv_refill(ctx)) {
+    return err;
+  }
   return 0;
 }
 
@@ -433,7 +499,7 @@ static int pp_close_ctx(struct pingpong_context *ctx)
     return 1;
   }
 
-  if (ibv_dereg_mr(ctx->rx_mr)) {
+  if (ibv_dereg_mr(ctx->rx_win.mr)) {
     fprintf(stderr, "Couldn't deregister MR\n");
     return 1;
   }
@@ -449,7 +515,7 @@ static int pp_close_ctx(struct pingpong_context *ctx)
   }
 
   free(ctx->tx_buf);
-  free(ctx->rx_buf);
+  free(ctx->rx_win.buf);
   free(ctx);
 
   return 0;
@@ -596,7 +662,7 @@ int main(int argc, char *argv[])
 
   int N = 0;
   while (N < (iters + skip)) {
-    printf("%d> iter %d/%d\n", rank, N+1, iters + skip);
+    // printf("%d> iter %d/%d\n", rank, N+1, iters + skip);
     int ret;
     int ne, i;
     struct ibv_wc wc[64];
@@ -640,17 +706,13 @@ int main(int argc, char *argv[])
             if(scnt == num_sent) {
               MPI_Ibarrier(MPI_COMM_WORLD, &b_req);
             }
-            LOGV("send complete [%d/%d]\n", scnt, num_sent);
+            //LOGV("send complete [%d/%d]\n", scnt, num_sent);
             break;
 
           case RECV_WRID:
             rcnt++;
-            if(rcnt == 1024) {
-              // process one batch
-              pp_post_recv_init(ctx);
-              rcnt = 0;
-            }
-            LOGV("recv complete [%d]\n", rcnt);
+            pp_on_recv(ctx, wr_id.tagid.id);
+            //LOGV("recv complete [%d]\n", rcnt);
             break;
 
           default:
@@ -668,6 +730,7 @@ int main(int argc, char *argv[])
         }
       }
     }
+    pp_on_flush(ctx);
     N++;
   }
 
