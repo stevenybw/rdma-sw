@@ -45,7 +45,6 @@ struct pingpong_context {
   void*    rx_buf;
   int      tx_depth;
   int      rx_depth;
-  int     *tx_pending;
   int      rx_received;
   int      send_flags;
   struct ibv_port_attr     portinfo;
@@ -78,19 +77,18 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
   ctx->tx_depth   = tx_depth;
   ctx->rx_depth   = rx_depth;
 
-  size_t bufBytes = BUF_SIZE_PER_RANK * nprocs;
-  ctx->tx_buf     = memalign(PAGE_SIZE, bufBytes);
-  ctx->rx_buf     = memalign(PAGE_SIZE, MAX_SRQ_WR * sizeof(u64Int));
-  ctx->tx_pending = (int*) malloc(nprocs * sizeof(int));
+  size_t sendBufBytes = BUF_SIZE_PER_RANK * nprocs;
+  size_t recvBufBytes = MAX_SRQ_WR * sizeof(u64Int);
+  ctx->tx_buf     = memalign(PAGE_SIZE, sendBufBytes);
+  ctx->rx_buf     = memalign(PAGE_SIZE, recvBufBytes);
 
   if (!(ctx->tx_buf && ctx->rx_buf)) {
     fprintf(stderr, "Couldn't allocate work buf.\n");
     goto clean_ctx;
   }
 
-  memset(ctx->tx_buf, 0x7b, bufBytes);
-  memset(ctx->rx_buf, 0x7b, MAX_SRQ_WR * sizeof(u64Int));
-  memset(ctx->tx_pending, 0, nprocs * sizeof(int));
+  memset(ctx->tx_buf, 0x7b, sendBufBytes);
+  memset(ctx->rx_buf, 0x7b, recvBufBytes);
 
   ctx->context = ibv_open_device(ib_dev);
   if (!ctx->context) {
@@ -105,8 +103,8 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
     goto clean_device;
   }
 
-  ctx->tx_mr = ibv_reg_mr(ctx->pd, ctx->tx_buf, bufBytes, access_flags);
-  ctx->rx_mr = ibv_reg_mr(ctx->pd, ctx->rx_buf, bufBytes, access_flags);
+  ctx->tx_mr = ibv_reg_mr(ctx->pd, ctx->tx_buf, sendBufBytes, access_flags);
+  ctx->rx_mr = ibv_reg_mr(ctx->pd, ctx->rx_buf, recvBufBytes, access_flags);
 
   if (!(ctx->tx_mr && ctx->rx_mr)) {
     fprintf(stderr, "Couldn't register MR\n");
@@ -138,9 +136,11 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
   }
 
   {
+    LOGDS("    creating QP\n");
     int i;
     struct ibv_qp** qp_list = (struct ibv_qp**) malloc(nprocs * sizeof(uintptr_t));
     NZ(qp_list);
+    ctx->qp_list = qp_list;
 
     // create qp
     for(i=0; i<nprocs; i++) {
@@ -165,12 +165,12 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
       if (init_attr.cap.max_inline_data >= sizeof(u64Int)) {
         ctx->send_flags |= IBV_SEND_INLINE;
       }
-      ctx->qp_list[i] = qp;
+      qp_list[i] = qp;
     }
 
-    // qp -> INIT
+    LOGDS("    setting QP to INIT\n");
     for(i=0; i<nprocs; i++) {
-      struct ibv_qp* qp = ctx->qp_list[i];
+      struct ibv_qp* qp = qp_list[i];
       struct ibv_qp_attr attr = {
         .qp_state        = IBV_QPS_INIT,
         .pkey_index      = 0,
@@ -217,7 +217,6 @@ clean_device:
 clean_buffer:
   free(ctx->tx_buf);
   free(ctx->rx_buf);
-  free(ctx->tx_pending);
 
 clean_ctx:
   free(ctx);
@@ -482,6 +481,8 @@ int main(int argc, char *argv[])
   int                      gidx = -1;
   char                     gid[33];
 
+  LOGDS("iballputall: allputall using libverbs\n");
+
   dev_list = ibv_get_device_list(NULL);
   if (!dev_list) {
     perror("Failed to get IB devices list");
@@ -494,11 +495,13 @@ int main(int argc, char *argv[])
     return 1;
   }
 
+  LOGDS("  initialize\n");
   ctx = pp_init_ctx(ib_dev, tx_depth, rx_depth, ib_port, rank, nprocs);
   if (!ctx) {
     return 1;
   }
 
+  LOGDS("  post receive\n");
   if (pp_post_recv_init(ctx)) {
     LOGD("Couldn't post receive initially\n");
     return 1;
@@ -515,7 +518,7 @@ int main(int argc, char *argv[])
     return 1;
   }
 
-  // exchange address
+  LOGDS("  exchange address\n");
   {
     int i;
     local_psn_list = (int*) malloc(nprocs * sizeof(int));
@@ -536,21 +539,21 @@ int main(int argc, char *argv[])
     remote_qpn_list = (int*) malloc(nprocs * sizeof(int));
     NZ(remote_qpn_list);
 
-    LOGDS("  MPI_Alltoall qpn_list...\n");
+    LOGDS("    MPI_Alltoall qpn_list...\n");
     MPI_Alltoall(local_qpn_list, 1, MPI_INT, remote_qpn_list, 1, MPI_INT, MPI_COMM_WORLD);
-    LOGDS("  MPI_Alltoall Complete\n");
+    LOGDS("    MPI_Alltoall Complete\n");
 
-    LOGDS("  MPI_Alltoall psn_list...\n");
+    LOGDS("    MPI_Alltoall psn_list...\n");
     MPI_Alltoall(local_psn_list, 1, MPI_INT, remote_psn_list, 1, MPI_INT, MPI_COMM_WORLD);
-    LOGDS("  MPI_Alltoall Complete\n");
+    LOGDS("    MPI_Alltoall Complete\n");
 
     
-    LOGDS("  MPI_Allgather lid_list...\n");
+    LOGDS("    MPI_Allgather lid_list...\n");
     MPI_Allgather(&local_lid, 1, MPI_INT, remote_lid_list, 1, MPI_INT, MPI_COMM_WORLD);
-    LOGDS("  MPI_Allgather Complete\n");
+    LOGDS("    MPI_Allgather Complete\n");
   }
 
-  LOGDS("  establishing connection");
+  LOGDS("  establishing connection\n");
   ZERO(pp_connect_ctx(ctx, ib_port, mtu, sl, gidx, local_psn_list, remote_lid_list, remote_psn_list, remote_qpn_list));
 
   {
