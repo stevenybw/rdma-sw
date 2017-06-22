@@ -22,6 +22,11 @@ enum {
   SEND_WRID = 2,
 };
 
+struct pingpong_wrid {
+  uint32_t tag;
+  uint32_t id;
+};
+
 struct pingpong_context {
   struct ibv_context  *context;
   struct ibv_pd   *pd;
@@ -42,13 +47,6 @@ struct pingpong_context {
   int      send_flags;
   struct ibv_port_attr     portinfo;
   uint64_t     completion_timestamp_mask;
-};
-
-struct pingpong_dest {
-  int lid;
-  int qpn;
-  int psn;
-  union ibv_gid gid;
 };
 
 #define PAGE_SIZE (1024*1024)
@@ -196,8 +194,8 @@ clean_qp:
   for(i=0; i<nprocs; i++) {
     ibv_destroy_qp(ctx->qp_list[i]);
     ctx->qp_list[i] = NULL;
-    free(ctx->qp_list[i]);
   }
+  free(ctx->qp_list[i]);
 }
 
 clean_cq:
@@ -226,8 +224,6 @@ clean_ctx:
 
 static int pp_post_recv_init(struct pingpong_context *ctx)
 {
-  int rank = ctx->rank;
-  int nprocs = ctx->nprocs;
   u64Int* rx_buf = (u64Int*) ctx->rx_buf;
 
   struct ibv_sge list = {
@@ -236,7 +232,6 @@ static int pp_post_recv_init(struct pingpong_context *ctx)
     .lkey = ctx->rx_mr->lkey
   };
   struct ibv_recv_wr wr = {
-    .wr_id      = RECV_WRID,
     .next       = NULL,
     .sg_list    = &list,
     .num_sge    = 1,
@@ -244,7 +239,11 @@ static int pp_post_recv_init(struct pingpong_context *ctx)
   struct ibv_recv_wr *bad_wr = NULL;
   int i, err;
   for (i = 0; i < MAX_SRQ_WR; ++i) {
-    wr.wr_id = i;
+    struct pingpong_wrid wr_id = {
+      .tag = RECV_WRID,
+      .id  = i;
+    };
+    wr.wr_id = (uint64_t) wr_id;
     list.addr = (uint64_t) &rx_buf[i];
     if (err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr)) {
       return err;
@@ -253,6 +252,40 @@ static int pp_post_recv_init(struct pingpong_context *ctx)
       LOGD("post_srq_recv has bad_wr\n");
       return -1;
     }
+  }
+
+  return 0;
+}
+
+static int pp_post_recv_refill(struct pingpong_context *ctx, int id)
+{
+  u64Int* rx_buf = (u64Int*) ctx->rx_buf;
+
+  struct ibv_sge list = {
+    .addr = (uintptr_t) &rx_buf[id],
+    .length = sizeof(u64Int),
+    .lkey = ctx->rx_mr->lkey
+  };
+
+  struct pingpong_wrid wr_id = {
+    .tag  = RECV_WRID,
+    .id   = id,
+  }
+
+  struct ibv_recv_wr wr = {
+    .wr_id      = (uint64_t) wr_id,
+    .next       = NULL,
+    .sg_list    = &list,
+    .num_sge    = 1,
+  };
+  struct ibv_recv_wr *bad_wr = NULL;
+
+  if (err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr)) {
+    return err;
+  }
+  if (bad_wr) {
+    LOGD("post_srq_recv has bad_wr\n");
+    return -1;
   }
 
   return 0;
@@ -334,8 +367,12 @@ static int pp_post_send_1024(struct pingpong_context* ctx) {
     .length = sizeof(u64Int),
     .lkey   = ctx->tx_mr->lkey,
   };
+  struct pingpong_wrid wr_id = {
+    .tag    = SEND_WRID,
+    .id     = 0,
+  };
   struct ibv_send_wr wr = {
-    .wr_id      = SEND_WRID,
+    .wr_id      = (uint64_t) wr_id,
     .next       = NULL,
     .sg_list    = &list,
     .num_sge    = 1,
@@ -360,9 +397,15 @@ static int pp_post_send_1024(struct pingpong_context* ctx) {
 
 static int pp_close_ctx(struct pingpong_context *ctx)
 {
-  if (ibv_destroy_qp(ctx->qp)) {
-    fprintf(stderr, "Couldn't destroy QP\n");
-    return 1;
+  {
+    int i;
+    for(i=0; i<nprocs; i++) {
+      if(ibv_destroy_qp(ctx->qp_list[i])) {
+        LOGD("Couldn't destroy QP[%d]\n", i);
+      }
+      ctx->qp_list[i] = NULL;
+    }
+    free(ctx->qp_list);
   }
 
   if (ibv_destroy_cq(ctx->cq)) {
@@ -416,8 +459,6 @@ int main(int argc, char *argv[])
   int                     *remote_lid_list = NULL;
   int                     *remote_psn_list = NULL;
   int                     *remote_qpn_list = NULL;
-  struct pingpong_dest     my_dest;
-  struct pingpong_dest    *all_dest;
   struct timeval           start, end;
   int                      ib_port = 1;
   // unsigned int             size = 4096;
@@ -544,12 +585,13 @@ int main(int argc, char *argv[])
       } else if (ne >= 1) {
         int i;
         for(i=0; i<ne; i++) {
+          struct pingpong_wrid wr_id = wc[i].wr_id;
           if(wc[i].status != IBV_WC_SUCCESS) {
-            LOGD("Failed status %s (%d) for wr_id %d\n", 
-              ibv_wc_status_str(wc[i].status), wc[i].status, (int) wc[i].wr_id);
+            LOGD("Failed status %s (%d) for wr_id %d:%d\n", 
+              ibv_wc_status_str(wc[i].status), wc[i].status, (int) wr_id.tag, (int) wr_id.id);
             return 1;
           }
-          switch ((int) wc[i].wr_id) {
+          switch ((int) wr_id.tag) {
           case SEND_WRID:
             scnt++;
             if(scnt == 1024) {
@@ -559,6 +601,11 @@ int main(int argc, char *argv[])
 
           case RECV_WRID:
             rcnt++;
+            if(rcnt == 1024) {
+              // process one batch
+              pp_post_recv_init(ctx);
+              rcnt = 0;
+            }
             break;
 
           default:
@@ -579,19 +626,28 @@ int main(int argc, char *argv[])
     N++;
   }
 
-  printf("%d Finished\n", rank);
-  MPI_Barrier(MPI_COMM_WORLD);
-
   if (gettimeofday(&end, NULL)) {
     perror("gettimeofday");
     return 1;
   }
+
+  printf("%d Finished\n", rank);
+  MPI_Barrier(MPI_COMM_WORLD);
 
   {
     float usec = (end.tv_sec - start.tv_sec) * 1000000 +
       (end.tv_usec - start.tv_usec);
     printf("%d iters in %.6f seconds = %.6f usec/iter\n",
            iters, usec / 1000000., usec / iters);
+  }
+
+  // free address
+  {
+    free(local_psn_list);
+    free(local_qpn_list);
+    free(remote_lid_list);
+    free(remote_psn_list);
+    free(remote_qpn_list);
   }
 
   if (pp_close_ctx(ctx))
