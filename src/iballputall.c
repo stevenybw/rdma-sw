@@ -22,9 +22,12 @@ enum {
   SEND_WRID = 2,
 };
 
-struct pingpong_wrid {
-  uint32_t tag;
-  uint32_t id;
+union pingpong_wrid {
+  struct {
+    uint32_t tag;
+    uint32_t id;
+  } tagid;
+  uint64_t val;
 };
 
 struct pingpong_context {
@@ -239,11 +242,13 @@ static int pp_post_recv_init(struct pingpong_context *ctx)
   struct ibv_recv_wr *bad_wr = NULL;
   int i, err;
   for (i = 0; i < MAX_SRQ_WR; ++i) {
-    struct pingpong_wrid wr_id = {
-      .tag = RECV_WRID,
-      .id  = i;
+    union pingpong_wrid wr_id = {
+      .tagid = {
+        .tag = RECV_WRID,
+        .id  = i,
+      }
     };
-    wr.wr_id = (uint64_t) wr_id;
+    wr.wr_id = (uint64_t) wr_id.val;
     list.addr = (uint64_t) &rx_buf[i];
     if (err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr)) {
       return err;
@@ -267,19 +272,22 @@ static int pp_post_recv_refill(struct pingpong_context *ctx, int id)
     .lkey = ctx->rx_mr->lkey
   };
 
-  struct pingpong_wrid wr_id = {
-    .tag  = RECV_WRID,
-    .id   = id,
-  }
+  union pingpong_wrid wr_id = {
+    .tagid = {
+      .tag  = RECV_WRID,
+      .id   = id,
+    }
+  };
 
   struct ibv_recv_wr wr = {
-    .wr_id      = (uint64_t) wr_id,
+    .wr_id      = (uint64_t) wr_id.val,
     .next       = NULL,
     .sg_list    = &list,
     .num_sge    = 1,
   };
   struct ibv_recv_wr *bad_wr = NULL;
 
+  int err;
   if (err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr)) {
     return err;
   }
@@ -367,12 +375,14 @@ static int pp_post_send_1024(struct pingpong_context* ctx) {
     .length = sizeof(u64Int),
     .lkey   = ctx->tx_mr->lkey,
   };
-  struct pingpong_wrid wr_id = {
-    .tag    = SEND_WRID,
-    .id     = 0,
+  union pingpong_wrid wr_id = {
+    .tagid = {
+      .tag    = SEND_WRID,
+      .id     = 0,
+    }
   };
   struct ibv_send_wr wr = {
-    .wr_id      = (uint64_t) wr_id,
+    .wr_id      = (uint64_t) wr_id.val,
     .next       = NULL,
     .sg_list    = &list,
     .num_sge    = 1,
@@ -397,6 +407,7 @@ static int pp_post_send_1024(struct pingpong_context* ctx) {
 
 static int pp_close_ctx(struct pingpong_context *ctx)
 {
+  int nprocs = ctx->nprocs;
   {
     int i;
     for(i=0; i<nprocs; i++) {
@@ -585,13 +596,14 @@ int main(int argc, char *argv[])
       } else if (ne >= 1) {
         int i;
         for(i=0; i<ne; i++) {
-          struct pingpong_wrid wr_id = wc[i].wr_id;
+          union pingpong_wrid wr_id;
+          wr_id.val = wc[i].wr_id;
           if(wc[i].status != IBV_WC_SUCCESS) {
             LOGD("Failed status %s (%d) for wr_id %d:%d\n", 
-              ibv_wc_status_str(wc[i].status), wc[i].status, (int) wr_id.tag, (int) wr_id.id);
+              ibv_wc_status_str(wc[i].status), wc[i].status, (int) wr_id.tagid.tag, (int) wr_id.tagid.id);
             return 1;
           }
-          switch ((int) wr_id.tag) {
+          switch ((int) wr_id.tagid.tag) {
           case SEND_WRID:
             scnt++;
             if(scnt == 1024) {
@@ -609,7 +621,7 @@ int main(int argc, char *argv[])
             break;
 
           default:
-            LOGD("unknown wr_id = %d\n", wc[i].wr_id);
+            LOGD("unknown wr_id = %d:%d\n", wr_id.tagid.tag, wr_id.tagid.id);
             return 1;
             break;
           }
