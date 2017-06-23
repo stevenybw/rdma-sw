@@ -15,6 +15,29 @@
 #define NZ(STATEMENT) assert(STATEMENT != NULL)
 #define ZERO(STATEMENT) assert(STATEMENT == 0)
 
+#define BEGIN_PROFILE(VARIABLE) do{Profiler.VARIABLE_total_time -= MPI_Wtime();}while(0)
+#define END_PROFILE(VARIABLE) do{Profiler.VARIABLE_total_time += MPI_Wtime();}while(0)
+
+struct {
+  double post_send_total_time;
+  double wait_recv_total_time;
+  double   wait_recv_process_msg_total_time;
+  double   wait_recv_mpi_test_total_time;
+  double flush_total_time;
+} Profiler;
+
+void profiler_init() {
+  memset(&Profiler, 0, sizeof(Profiler));
+}
+
+void profiler_print(int iters) {
+  printf("  post_send (us/iter) = %lf\n", 1e6 * post_send_total_time / iters);
+  printf("  wait_recv (us/iter) = %lf\n", 1e6 * wait_recv_total_time / iters);
+  printf("    process_msg (us/iter) = %lf\n", 1e6 * wait_recv_process_msg_total_time / iters);
+  printf("    mpi_test    (us/iter) = %lf\n", 1e6 * wait_recv_mpi_test_total_time / iters);
+  printf("  flush     (us/iter) = %lf\n", 1e6 * flush_total_time / iters);
+}
+
 typedef unsigned long long u64Int;
 
 enum {
@@ -659,6 +682,7 @@ int main(int argc, char *argv[])
     perror("gettimeofday");
     return 1;
   }
+  profiler_init();
 
   int N = 0;
   while (N < (iters + skip)) {
@@ -672,24 +696,29 @@ int main(int argc, char *argv[])
         perror("gettimeofday");
         return 1;
       }
+      profiler_init();
     }
 
+    BEGIN_PROFILE(post_send);
     int num_sent = pp_post_send_1024(ctx);
     if (num_sent < 0) {
       LOGD("pp_post_send failed\n");
       return 1;
     }
+    END_PROFILE(post_send);
 
     int scnt = 0;
     int rcnt = 0;
     MPI_Request b_req = MPI_REQUEST_NULL;
 
+    BEGIN_PROFILE(wait_recv);
     while(1) {
       ne = ibv_poll_cq(ctx->cq, 64, wc);
       if (ne < 0) {
         LOGD("poll CQ failed\n");
         return 1;
       } else if (ne >= 1) {
+        BEGIN_PROFILE(wait_recv_process_msg);
         //LOGV("complete %d request\n", ne);
         int i;
         for(i=0; i<ne; i++) {
@@ -721,7 +750,9 @@ int main(int argc, char *argv[])
             break;
           }
         }
+        END_PROFILE(wait_recv_process_msg);
       }
+      BEGIN_PROFILE(wait_recv_mpi_test);
       if(b_req != MPI_REQUEST_NULL) {
         int flag;
         MPI_Test(&b_req, &flag, MPI_STATUS_IGNORE);
@@ -729,8 +760,13 @@ int main(int argc, char *argv[])
           break;
         }
       }
+      END_PROFILE(wait_recv_mpi_test);
     }
+    END_PROFILE(wait_recv);
+
+    BEGIN_PROFILE(flush);
     pp_on_flush(ctx);
+    END_PROFILE(flush);
     N++;
   }
 
