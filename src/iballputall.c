@@ -458,17 +458,24 @@ static int pp_connect_ctx(struct pingpong_context *ctx, int port, enum ibv_mtu m
  */
 static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge* sge_list,
                         struct ibv_send_wr* send_wr_list, int rank, int count) {
-  int i;
+  int i, err;
   u64Int* tx_buf = (u64Int*) ctx->tx_buf;
 
   send_wr_list[count-1].next = NULL;
   for(i=0; i<count; i++) {
-    sge_list[i].addr = &tx_buf[i];
+    union pingpong_wrid wr_id = {
+      .tagid = {
+        .tag = SEND_WRID,
+        .id  = i,
+      }
+    };
+    sge_list[i].addr = (uint64_t) &tx_buf[i];
+    send_wr_list[i].wr_id = wr_id.val;
   }
   {
     struct ibv_send_wr *bad_wr = NULL;
     BEGIN_PROFILE(send_post);
-    if(err = ibv_post_send(ctx->qp_list[dest], send_wr_list, &bad_wr)) {
+    if(err = ibv_post_send(ctx->qp_list[rank], send_wr_list, &bad_wr)) {
       LOGD("%d-th ibv_post_send returned %d, errno = %d[%s]\n", i, err, errno, strerror(errno));
       return -1;
     }
@@ -477,8 +484,8 @@ static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge*
       LOGD("bad_wr\n");
       return -1;
     }
-    send_wr_list[count-1].next = &send_wr_list[count];
   }
+  send_wr_list[count-1].next = &send_wr_list[count];
 }
 
 static int pp_post_send_1024(struct pingpong_context* ctx) {
@@ -709,30 +716,24 @@ int main(int argc, char *argv[])
   struct ibv_send_wr *send_wr_list  = NULL;
   {
     int i;
-    list    = (struct ibv_sge*) malloc(1024 * sizeof(struct ibv_sge));
-    send_wr = (struct ibv_send_wr*) malloc(1024 * sizeof(struct ibv_send_wr));
+    sge_list    = (struct ibv_sge*) malloc(1024 * sizeof(struct ibv_sge));
+    send_wr_list = (struct ibv_send_wr*) malloc(1024 * sizeof(struct ibv_send_wr));
     for(i=0; i<1024; i++) {
-      list[i] = {
-        .addr   = 0,
-        .length = sizeof(u64Int),
-        .lkey   = ctx->tx_mr->lkey,
-      };
+      sge_list[i].addr = 0;
+      sge_list[i].length = sizeof(u64Int);
+      sge_list[i].lkey   = ctx->tx_mr->lkey;
       if(i == 1023) {
-        send_wr[i] = {
-          .next       = NULL,
-          .sg_list    = &list[i],
-          .num_sge    = 1,
-          .opcode     = IBV_WR_SEND,
-          .send_flags = ctx->send_flags,
-        };
+        send_wr_list[i].next    = NULL;
+        send_wr_list[i].sg_list = &sge_list[i];
+        send_wr_list[i].num_sge = 1;
+        send_wr_list[i].opcode  = IBV_WR_SEND;
+        send_wr_list[i].send_flags = ctx->send_flags;
       } else {
-        send_wr[i] = {
-          .next       = &send_wr[i+1],
-          .sg_list    = &list[i],
-          .num_sge    = 1,
-          .opcode     = IBV_WR_SEND,
-          .send_flags = ctx->send_flags,
-        };
+        send_wr_list[i].next    = &send_wr_list[i+1];
+        send_wr_list[i].sg_list = &sge_list[i];
+        send_wr_list[i].num_sge = 1;
+        send_wr_list[i].opcode  = IBV_WR_SEND;
+        send_wr_list[i].send_flags = ctx->send_flags;
       }
     }
   }
@@ -742,22 +743,22 @@ int main(int argc, char *argv[])
   LOGDS("  benchmark ibv_post_send overhead alone\n");
   LOGDS("%*s%*s\n", 12, "count", 12, "time(us)");
   if(rank < 2) {
-    int scnt=0, rcnt=0;
     int count;
     int ne, i;
     struct ibv_wc wc[64];
 
     for(count=1; count<=512; count*=2) {
+      int scnt=0, rcnt=0;
       pp_post_send_rank_count(ctx, sge_list, send_wr_list, (rank==0)?1:0, count);
       BEGIN_PROFILE(wait_recv);
-      while(scnt != count && rcnt != count) {
+      while(scnt!=count || rcnt!=count) {
         ne = ibv_poll_cq(ctx->cq, 64, wc);
         if (ne < 0) {
           LOGD("poll CQ failed\n");
           return 1;
         } else if (ne >= 1) {
           BEGIN_PROFILE(wait_recv_process_msg);
-          //LOGV("complete %d request\n", ne);
+          LOGV("complete %d request\n", ne);
           int i;
           for(i=0; i<ne; i++) {
             union pingpong_wrid wr_id;
@@ -767,17 +768,16 @@ int main(int argc, char *argv[])
                 ibv_wc_status_str(wc[i].status), wc[i].status, (int) wr_id.tagid.tag, (int) wr_id.tagid.id);
               return 1;
             }
-            switch (wc[i].opcode) {
-            case IBV_WC_SEND:
+            switch (wr_id.tagid.tag) {
+            case SEND_WRID:
               scnt++;
-              //LOGV("send complete [%d/%d]\n", scnt, num_sent);
+              LOGV("send %d complete [%d/%d]\n", wr_id.tagid.id, scnt, count);
               break;
-            case IBV_WC_RECV:
+            case RECV_WRID:
               rcnt++;
               pp_on_recv(ctx, wr_id.tagid.id);
-              //LOGV("recv complete [%d]\n", rcnt);
+              LOGV("recv %d complete [%d/%d]\n", wr_id.tagid.id, rcnt, count);
               break;
-
             default:
               LOGD("unknown wr_id = %d:%d\n", wr_id.tagid.tag, wr_id.tagid.id);
               return 1;
@@ -794,6 +794,7 @@ int main(int argc, char *argv[])
       END_PROFILE(flush);
 
       LOGDS("%*d%*lf\n", 12, count, 12, Profiler.send_post_total_time);
+      MPI_Barrier(MPI_COMM_WORLD);
     }
   }
   MPI_Barrier(MPI_COMM_WORLD);
