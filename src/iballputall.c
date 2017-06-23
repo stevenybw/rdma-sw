@@ -15,8 +15,8 @@
 #define NZ(STATEMENT) assert(STATEMENT != NULL)
 #define ZERO(STATEMENT) assert(STATEMENT == 0)
 
-#define BEGIN_PROFILE(VARIABLE) do{Profiler.VARIABLE_total_time -= MPI_Wtime();}while(0)
-#define END_PROFILE(VARIABLE) do{Profiler.VARIABLE_total_time += MPI_Wtime();}while(0)
+#define BEGIN_PROFILE(VARIABLE) do{Profiler.VARIABLE ## _total_time -= MPI_Wtime();}while(0)
+#define END_PROFILE(VARIABLE) do{Profiler.VARIABLE ## _total_time += MPI_Wtime();}while(0)
 
 struct {
   double post_send_total_time;
@@ -31,11 +31,11 @@ void profiler_init() {
 }
 
 void profiler_print(int iters) {
-  printf("  post_send (us/iter) = %lf\n", 1e6 * post_send_total_time / iters);
-  printf("  wait_recv (us/iter) = %lf\n", 1e6 * wait_recv_total_time / iters);
-  printf("    process_msg (us/iter) = %lf\n", 1e6 * wait_recv_process_msg_total_time / iters);
-  printf("    mpi_test    (us/iter) = %lf\n", 1e6 * wait_recv_mpi_test_total_time / iters);
-  printf("  flush     (us/iter) = %lf\n", 1e6 * flush_total_time / iters);
+  printf("  post_send (us/iter) = %lf\n", 1e6 * Profiler.post_send_total_time / iters);
+  printf("  wait_recv (us/iter) = %lf\n", 1e6 * Profiler.wait_recv_total_time / iters);
+  printf("    process_msg (us/iter) = %lf\n", 1e6 * Profiler.wait_recv_process_msg_total_time / iters);
+  printf("    mpi_test    (us/iter) = %lf\n", 1e6 * Profiler.wait_recv_mpi_test_total_time / iters);
+  printf("  flush     (us/iter) = %lf\n", 1e6 * Profiler.flush_total_time / iters);
 }
 
 typedef unsigned long long u64Int;
@@ -481,7 +481,7 @@ static int pp_post_send_1024(struct pingpong_context* ctx) {
   struct ibv_send_wr *bad_wr = NULL;
 
   for(i=0; i<1024; i++) {
-    int dest = i % nprocs;
+    int dest = (rank+i) % nprocs;
     if(dest != rank) {
       list.addr = (uint64_t) &tx_buf[i];
       if(err = ibv_post_send(ctx->qp_list[dest], &wr, &bad_wr)) {
@@ -757,6 +757,7 @@ int main(int argc, char *argv[])
         int flag;
         MPI_Test(&b_req, &flag, MPI_STATUS_IGNORE);
         if(flag) {
+          END_PROFILE(wait_recv_mpi_test);
           break;
         }
       }
@@ -783,6 +784,10 @@ int main(int argc, char *argv[])
       (end.tv_usec - start.tv_usec);
     printf("%d iters in %.6f seconds = %.6f usec/iter\n",
            iters, usec / 1000000., usec / iters);
+  }
+
+  if(rank == 0) {
+    profiler_print(iters);
   }
 
   // free address
