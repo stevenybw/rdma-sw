@@ -33,6 +33,7 @@ void profiler_init() {
 
 void profiler_print(int iters) {
   printf("  send (us/iter) = %lf\n", 1e6 * Profiler.send_total_time / iters);
+  printf("    post (us/iter) = %lf\n", 1e6 * Profiler.send_post_total_time / iters);
   printf("  wait_recv (us/iter) = %lf\n", 1e6 * Profiler.wait_recv_total_time / iters);
   printf("    process_msg (us/iter) = %lf\n", 1e6 * Profiler.wait_recv_process_msg_total_time / iters);
   printf("    mpi_test    (us/iter) = %lf\n", 1e6 * Profiler.wait_recv_mpi_test_total_time / iters);
@@ -704,21 +705,8 @@ int main(int argc, char *argv[])
     }
   }
 
-  MPI_Barrier(MPI_COMM_WORLD);
-  LOGDS("  benchmark ibv_post_send overhead alone\n");
-  if(rank < 2) {
-
-  }
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  if (gettimeofday(&start, NULL)) {
-    perror("gettimeofday");
-    return 1;
-  }
-  profiler_init();
-
-  struct ibv_sge     *list     = NULL;
-  struct ibv_send_wr *send_wr  = NULL;
+  struct ibv_sge     *sge_list     = NULL;
+  struct ibv_send_wr *send_wr_list  = NULL;
   {
     int i;
     list    = (struct ibv_sge*) malloc(1024 * sizeof(struct ibv_sge));
@@ -748,6 +736,73 @@ int main(int argc, char *argv[])
       }
     }
   }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  profiler_init();
+  LOGDS("  benchmark ibv_post_send overhead alone\n");
+  LOGDS("%*s%*s\n", 12, "count", 12, "time(us)");
+  if(rank < 2) {
+    int scnt=0, rcnt=0;
+    int count;
+    int ne, i;
+    struct ibv_wc wc[64];
+
+    for(count=1; count<=512; count*=2) {
+      pp_post_send_rank_count(ctx, sge_list, send_wr_list, (rank==0)?1:0, count);
+      BEGIN_PROFILE(wait_recv);
+      while(scnt != count && rcnt != count) {
+        ne = ibv_poll_cq(ctx->cq, 64, wc);
+        if (ne < 0) {
+          LOGD("poll CQ failed\n");
+          return 1;
+        } else if (ne >= 1) {
+          BEGIN_PROFILE(wait_recv_process_msg);
+          //LOGV("complete %d request\n", ne);
+          int i;
+          for(i=0; i<ne; i++) {
+            union pingpong_wrid wr_id;
+            wr_id.val = wc[i].wr_id;
+            if(wc[i].status != IBV_WC_SUCCESS) {
+              LOGD("Failed status %s (%d) for wr_id %d:%d\n", 
+                ibv_wc_status_str(wc[i].status), wc[i].status, (int) wr_id.tagid.tag, (int) wr_id.tagid.id);
+              return 1;
+            }
+            switch (wc[i].opcode) {
+            case IBV_WC_SEND:
+              scnt++;
+              //LOGV("send complete [%d/%d]\n", scnt, num_sent);
+              break;
+            case IBV_WC_RECV:
+              rcnt++;
+              pp_on_recv(ctx, wr_id.tagid.id);
+              //LOGV("recv complete [%d]\n", rcnt);
+              break;
+
+            default:
+              LOGD("unknown wr_id = %d:%d\n", wr_id.tagid.tag, wr_id.tagid.id);
+              return 1;
+              break;
+            }
+          }
+          END_PROFILE(wait_recv_process_msg);
+        }
+      }
+      END_PROFILE(wait_recv);
+
+      BEGIN_PROFILE(flush);
+      pp_on_flush(ctx);
+      END_PROFILE(flush);
+
+      LOGDS("%*d%*lf\n", 12, count, 12, Profiler.send_post_total_time);
+    }
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  if (gettimeofday(&start, NULL)) {
+    perror("gettimeofday");
+    return 1;
+  }
+  profiler_init();
 
   int N = 0;
   while (N < (iters + skip)) {
