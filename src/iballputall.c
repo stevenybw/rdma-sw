@@ -19,7 +19,8 @@
 #define END_PROFILE(VARIABLE) do{Profiler.VARIABLE ## _total_time += MPI_Wtime();}while(0)
 
 struct {
-  double post_send_total_time;
+  double send_total_time;
+  double   send_post_total_time;
   double wait_recv_total_time;
   double   wait_recv_process_msg_total_time;
   double   wait_recv_mpi_test_total_time;
@@ -31,7 +32,7 @@ void profiler_init() {
 }
 
 void profiler_print(int iters) {
-  printf("  post_send (us/iter) = %lf\n", 1e6 * Profiler.post_send_total_time / iters);
+  printf("  send (us/iter) = %lf\n", 1e6 * Profiler.send_total_time / iters);
   printf("  wait_recv (us/iter) = %lf\n", 1e6 * Profiler.wait_recv_total_time / iters);
   printf("    process_msg (us/iter) = %lf\n", 1e6 * Profiler.wait_recv_process_msg_total_time / iters);
   printf("    mpi_test    (us/iter) = %lf\n", 1e6 * Profiler.wait_recv_mpi_test_total_time / iters);
@@ -451,6 +452,34 @@ static int pp_connect_ctx(struct pingpong_context *ctx, int port, enum ibv_mtu m
   return 0;
 }
 
+/*
+ * used to measure performance gain using multiple wr
+ */
+static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge* sge_list,
+                        struct ibv_send_wr* send_wr_list, int rank, int count) {
+  int i;
+  u64Int* tx_buf = (u64Int*) ctx->tx_buf;
+
+  send_wr_list[count-1].next = NULL;
+  for(i=0; i<count; i++) {
+    sge_list[i].addr = &tx_buf[i];
+  }
+  {
+    struct ibv_send_wr *bad_wr = NULL;
+    BEGIN_PROFILE(send_post);
+    if(err = ibv_post_send(ctx->qp_list[dest], send_wr_list, &bad_wr)) {
+      LOGD("%d-th ibv_post_send returned %d, errno = %d[%s]\n", i, err, errno, strerror(errno));
+      return -1;
+    }
+    END_PROFILE(send_post);
+    if(bad_wr) {
+      LOGD("bad_wr\n");
+      return -1;
+    }
+    send_wr_list[count-1].next = &send_wr_list[count];
+  }
+}
+
 static int pp_post_send_1024(struct pingpong_context* ctx) {
   int i;
   int rank        = ctx->rank;
@@ -676,13 +705,49 @@ int main(int argc, char *argv[])
   }
 
   MPI_Barrier(MPI_COMM_WORLD);
-  LOGDS("  ready to communicate\n");
+  LOGDS("  benchmark ibv_post_send overhead alone\n");
+  if(rank < 2) {
+
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
 
   if (gettimeofday(&start, NULL)) {
     perror("gettimeofday");
     return 1;
   }
   profiler_init();
+
+  struct ibv_sge     *list     = NULL;
+  struct ibv_send_wr *send_wr  = NULL;
+  {
+    int i;
+    list    = (struct ibv_sge*) malloc(1024 * sizeof(struct ibv_sge));
+    send_wr = (struct ibv_send_wr*) malloc(1024 * sizeof(struct ibv_send_wr));
+    for(i=0; i<1024; i++) {
+      list[i] = {
+        .addr   = 0,
+        .length = sizeof(u64Int),
+        .lkey   = ctx->tx_mr->lkey,
+      };
+      if(i == 1023) {
+        send_wr[i] = {
+          .next       = NULL,
+          .sg_list    = &list[i],
+          .num_sge    = 1,
+          .opcode     = IBV_WR_SEND,
+          .send_flags = ctx->send_flags,
+        };
+      } else {
+        send_wr[i] = {
+          .next       = &send_wr[i+1],
+          .sg_list    = &list[i],
+          .num_sge    = 1,
+          .opcode     = IBV_WR_SEND,
+          .send_flags = ctx->send_flags,
+        };
+      }
+    }
+  }
 
   int N = 0;
   while (N < (iters + skip)) {
@@ -699,13 +764,13 @@ int main(int argc, char *argv[])
       profiler_init();
     }
 
-    BEGIN_PROFILE(post_send);
+    BEGIN_PROFILE(send);
     int num_sent = pp_post_send_1024(ctx);
     if (num_sent < 0) {
       LOGD("pp_post_send failed\n");
       return 1;
     }
-    END_PROFILE(post_send);
+    END_PROFILE(send);
 
     int scnt = 0;
     int rcnt = 0;
