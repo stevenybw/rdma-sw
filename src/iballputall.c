@@ -597,11 +597,16 @@ int benchmark_wr_len(struct pingpong_context* ctx, struct ibv_sge* sge_list,
   MPI_Allgather(&absolute_rank, 1, MPI_INT, wranks, 1, MPI_INT, comm);
 
   {
-    const char* t0  = "count";
+    const char* t0 = "count";
     const char* t1 = "post time(us)";
     const char* t2 = "mesg rate(M/s)";
+    const char* t3 = "time (us)";
+    const char* t4 = "post_time(us)";
+    const char* t5 = "proc_time(us)";
+    const char* t6 = "flush_time(us)";
     if(show_result) {
-      LOGDS("%*s%*s%*s\n", RESULT_SPACE, t0, RESULT_SPACE, t1, RESULT_SPACE, t2);
+      LOGDS("%*s%*s%*s%*s%*s%*s%*s\n", RESULT_SPACE, t0, RESULT_SPACE, t1, RESULT_SPACE, t2, 
+        RESULT_SPACE, t3, RESULT_SPACE, t4, RESULT_SPACE, t5, RESULT_SPACE, t6);
     }
   }
 
@@ -611,7 +616,10 @@ int benchmark_wr_len(struct pingpong_context* ctx, struct ibv_sge* sge_list,
     int dst = wranks[(rank==0)?1:0];
 
     double wtime = -MPI_Wtime();
+    double  post_time = -MPI_Wtime();
+    double  process_time = 0.0;
     pp_post_send_rank_count(ctx, sge_list, send_wr_list, dst, count);
+    post_time += MPI_Wtime();
     {
       while(scnt!=count || rcnt!=count) {
         ne = ibv_poll_cq(ctx->cq, 64, wc);
@@ -620,6 +628,7 @@ int benchmark_wr_len(struct pingpong_context* ctx, struct ibv_sge* sge_list,
           return 1;
         } else if (ne >= 1) {
           // LOGV("complete %d request\n", ne);
+          process_time -= MPI_Wtime();
           int i;
           for(i=0; i<ne; i++) {
             union pingpong_wrid wr_id;
@@ -645,20 +654,29 @@ int benchmark_wr_len(struct pingpong_context* ctx, struct ibv_sge* sge_list,
               break;
             }
           }
+          process_time += MPI_Wtime();
         }
       }
     }
-    wtime += MPI_Wtime();
 
     BEGIN_PROFILE(flush);
     pp_on_flush(ctx);
     END_PROFILE(flush);
 
     MPI_Barrier(comm);
+
+    wtime += MPI_Wtime();
+
     if(show_result) {
       double r0 = 1e6 * Profiler.send_post_total_time / count;
       double r1 = 1e-6 * count / wtime;
-      LOGDS("%*d%*lf%*lf\n", RESULT_SPACE, count, RESULT_SPACE, r0, RESULT_SPACE, r1);
+      double r2 = 1e6 * wtime;
+      double r3 = 1e6 * post_time;
+      double r4 = 1e6 * process_time;
+      double r5 = 1e6 * Profiler.flush_total_time;
+
+      LOGDS("%*d%*lf%*lf%*lf%*lf%*lf%*lf\n", RESULT_SPACE, count, RESULT_SPACE, r0, RESULT_SPACE, r1, 
+          RESULT_SPACE, r2, RESULT_SPACE, r3, RESULT_SPACE, r4, RESULT_SPACE, r5);
     }
   }
 }
