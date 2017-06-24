@@ -821,6 +821,22 @@ int main(int argc, char *argv[])
   }
 
   {
+    LOGDS("  main write benchmark (uint64_t granuarity)\n");
+    LOGDS("  %*s%*s%*s\n", RESULT_SPACE, "count", RESULT_SPACE, "time (us)", RESULT_SPACE, "MB/s");
+    u64Int* arr = (u64Int*) malloc(1024*1024*sizeof(u64Int));
+    int i, count;
+    for(count = 1; count < 1024 * 1024; count*=2) {
+      double time = -MPI_Wtime();
+      for(i=0; i<count; i++) {
+        arr[i] = i;
+      }
+      time += MPI_Wtime();
+      LOGDS("%*d%*lf%*lf\n", RESULT_SPACE, count, RESULT_SPACE, 1e6 * time/count, RESULT_SPACE, 1e-6 * sizeof(u64Int) * count / time);
+    }
+    free(arr);
+  }
+
+  {
     MPI_Comm comm_pair;
     MPI_Comm_split(MPI_COMM_WORLD, rank/2, rank%2, &comm_pair);
     MPI_Barrier(MPI_COMM_WORLD);
