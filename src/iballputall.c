@@ -187,7 +187,7 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
         .recv_cq = ctx->cq,
         .srq     = ctx->srq,
         .cap     = {
-          .max_send_wr  = tx_depth,
+          .max_send_wr  = 1024,
           .max_send_sge = 1,
         },
         .qp_type = IBV_QPT_RC
@@ -475,6 +475,7 @@ static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge*
   {
     struct ibv_send_wr *bad_wr = NULL;
     BEGIN_PROFILE(send_post);
+    LOGD("ibv_post_send to %d\n", rank);
     if(err = ibv_post_send(ctx->qp_list[rank], send_wr_list, &bad_wr)) {
       LOGD("%d-th ibv_post_send returned %d, errno = %d[%s]\n", i, err, errno, strerror(errno));
       return -1;
@@ -738,6 +739,8 @@ int main(int argc, char *argv[])
     }
   }
 
+  MPI_Comm comm_pair;
+  MPI_Comm_split(MPI_COMM_WORLD, rank/2, rank%2, &comm_pair);
   MPI_Barrier(MPI_COMM_WORLD);
   profiler_init();
   LOGDS("  benchmark ibv_post_send overhead alone\n");
@@ -749,7 +752,8 @@ int main(int argc, char *argv[])
 
     for(count=1; count<=512; count*=2) {
       int scnt=0, rcnt=0;
-      pp_post_send_rank_count(ctx, sge_list, send_wr_list, (rank==0)?1:0, count);
+      int dst = (rank==0)?1:0;
+      pp_post_send_rank_count(ctx, sge_list, send_wr_list, dst, count);
       BEGIN_PROFILE(wait_recv);
       while(scnt!=count || rcnt!=count) {
         ne = ibv_poll_cq(ctx->cq, 64, wc);
@@ -771,12 +775,12 @@ int main(int argc, char *argv[])
             switch (wr_id.tagid.tag) {
             case SEND_WRID:
               scnt++;
-              LOGV("send %d complete [%d/%d]\n", wr_id.tagid.id, scnt, count);
+              // LOGV("send %d complete [%d/%d]\n", wr_id.tagid.id, scnt, count);
               break;
             case RECV_WRID:
               rcnt++;
               pp_on_recv(ctx, wr_id.tagid.id);
-              LOGV("recv %d complete [%d/%d]\n", wr_id.tagid.id, rcnt, count);
+              // LOGV("recv %d complete [%d/%d]\n", wr_id.tagid.id, rcnt, count);
               break;
             default:
               LOGD("unknown wr_id = %d:%d\n", wr_id.tagid.tag, wr_id.tagid.id);
@@ -794,7 +798,7 @@ int main(int argc, char *argv[])
       END_PROFILE(flush);
 
       LOGDS("%*d%*lf\n", 12, count, 12, Profiler.send_post_total_time);
-      MPI_Barrier(MPI_COMM_WORLD);
+      MPI_Barrier(comm_pair);
     }
   }
   MPI_Barrier(MPI_COMM_WORLD);
