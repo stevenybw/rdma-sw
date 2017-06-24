@@ -72,6 +72,11 @@ struct pingpong_context {
   struct ibv_qp  **qp_list;
   struct rx_win_s  rx_win;
 
+  struct ibv_sge     *sge_list;
+  struct ibv_send_wr *send_wr_list;
+  struct ibv_sge     *recv_sge_list;
+  struct ibv_recv_wr *recv_wr_list;
+
   int      rank;
   int      nprocs;
   void*    tx_buf;
@@ -266,46 +271,42 @@ static int pp_post_recv_refill(struct pingpong_context *ctx)
   int          idx = ctx->rx_win.idx;
   int          len = ctx->rx_win.len;
   u64Int*   rx_buf = (u64Int*) ctx->rx_win.buf;
+  
+  struct ibv_sge* recv_sge_list = ctx->recv_sge_list;
+  struct ibv_recv_wr* recv_wr_list = ctx->recv_wr_list;
 
   ctx->rx_win.len = MAX_SRQ_WR;
 
-  struct ibv_sge list = {
-    .addr = (uintptr_t) 0,
-    .length = sizeof(u64Int),
-    .lkey = ctx->rx_win.mr->lkey
-  };
-  union pingpong_wrid wr_id = {
-    .tagid = {
-      .tag  = RECV_WRID,
-      .id   = -1,
-    }
-  };
-  struct ibv_recv_wr wr = {
-    .wr_id      = (uint64_t) 0,
-    .next       = NULL,
-    .sg_list    = &list,
-    .num_sge    = 1,
-  };
   struct ibv_recv_wr *bad_wr = NULL;
 
   int i;
   int num_recv = MAX_SRQ_WR - len;
   int id = (idx + len) % MAX_SRQ_WR;
   BEGIN_PROFILE(wait_recv_process_msg_post);
+  
   for(i=0; i<num_recv; i++) {
-    list.addr = (uintptr_t) &rx_buf[id];
-    wr_id.tagid.id = id;
-    wr.wr_id = wr_id.val;
-    int err;
-    if (err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr)) {
-      return err;
-    }
-    if (bad_wr) {
-      LOGD("post_srq_recv has bad_wr\n");
-      return -1;
-    }
+    union pingpong_wrid wr_id = {
+      .tagid = {
+        .tag  = RECV_WRID,
+        .id   = id,
+      }
+    };
+    recv_sge_list[i].addr = (uintptr_t) &rx_buf[id];
+    recv_wr_list[i].wr_id = wr_id.val;
     id = (id + 1) % MAX_SRQ_WR;
   }
+  recv_wr_list[num_recv-1].next = NULL;
+
+  int err;
+  if (err = ibv_post_srq_recv(ctx->srq, recv_wr_list, &bad_wr)) {
+    return err;
+  }
+  if (bad_wr) {
+    LOGD("post_srq_recv has bad_wr\n");
+    return -1;
+  }
+  recv_wr_list[num_recv-1].next = &recv_wr_list[num_recv];
+  
   END_PROFILE(wait_recv_process_msg_post);
 
   return 0;
@@ -749,6 +750,56 @@ int main(int argc, char *argv[])
     return 1;
   }
 
+  struct ibv_sge     *sge_list      = NULL;
+  struct ibv_send_wr *send_wr_list  = NULL;
+  struct ibv_sge     *recv_sge_list = NULL;
+  struct ibv_recv_wr *recv_wr_list  = NULL;
+  {
+    int i;
+    sge_list    = (struct ibv_sge*) malloc(1024 * sizeof(struct ibv_sge));           NZ(sge_list);
+    send_wr_list = (struct ibv_send_wr*) malloc(1024 * sizeof(struct ibv_send_wr));  NZ(send_wr_list);
+    recv_sge_list = (struct ibv_sge*) malloc(1024 * sizeof(struct ibv_sge));         NZ(recv_sge_list);
+    recv_wr_list = (struct ibv_recv_wr*) malloc(1024 * sizeof(struct ibv_recv_wr));  NZ(recv_wr_list);
+
+    for(i=0; i<1024; i++) {
+      sge_list[i].addr = 0;
+      sge_list[i].length = sizeof(u64Int);
+      sge_list[i].lkey   = ctx->tx_mr->lkey;
+
+      recv_sge_list[i].addr   = 0;
+      recv_sge_list[i].length = sizeof(u64Int);
+      recv_sge_list[i].lkey   = ctx->rx_win.mr->lkey;
+
+      if(i == 1023) {
+        send_wr_list[i].next    = NULL;
+        send_wr_list[i].sg_list = &sge_list[i];
+        send_wr_list[i].num_sge = 1;
+        send_wr_list[i].opcode  = IBV_WR_SEND;
+        send_wr_list[i].send_flags = ctx->send_flags;
+      } else {
+        send_wr_list[i].next    = &send_wr_list[i+1];
+        send_wr_list[i].sg_list = &sge_list[i];
+        send_wr_list[i].num_sge = 1;
+        send_wr_list[i].opcode  = IBV_WR_SEND;
+        send_wr_list[i].send_flags = ctx->send_flags;
+      }
+
+      if(i == 1023) {
+        recv_wr_list[i].next    = NULL;
+        recv_wr_list[i].sg_list = &recv_sge_list[i];
+        recv_wr_list[i].num_sge = 1;
+      } else {
+        recv_wr_list[i].next    = &recv_wr_list[i+1];
+        recv_wr_list[i].sg_list = &recv_sge_list[i];
+        recv_wr_list[i].num_sge = 1;
+      }
+    }
+  }
+  ctx->sge_list      = sge_list;     
+  ctx->send_wr_list  = send_wr_list; 
+  ctx->recv_sge_list = recv_sge_list;
+  ctx->recv_wr_list  = recv_wr_list; 
+
   LOGDS("  post receive\n");
   if (pp_post_recv_refill(ctx)) {
     LOGD("Couldn't post receive initially\n");
@@ -827,32 +878,6 @@ int main(int argc, char *argv[])
     u64Int* tx_buf = ctx->tx_buf;
     for(i=0; i<tx_depth; i++) {
       tx_buf[i] = i;
-    }
-  }
-
-  struct ibv_sge     *sge_list     = NULL;
-  struct ibv_send_wr *send_wr_list  = NULL;
-  {
-    int i;
-    sge_list    = (struct ibv_sge*) malloc(1024 * sizeof(struct ibv_sge));
-    send_wr_list = (struct ibv_send_wr*) malloc(1024 * sizeof(struct ibv_send_wr));
-    for(i=0; i<1024; i++) {
-      sge_list[i].addr = 0;
-      sge_list[i].length = sizeof(u64Int);
-      sge_list[i].lkey   = ctx->tx_mr->lkey;
-      if(i == 1023) {
-        send_wr_list[i].next    = NULL;
-        send_wr_list[i].sg_list = &sge_list[i];
-        send_wr_list[i].num_sge = 1;
-        send_wr_list[i].opcode  = IBV_WR_SEND;
-        send_wr_list[i].send_flags = ctx->send_flags;
-      } else {
-        send_wr_list[i].next    = &send_wr_list[i+1];
-        send_wr_list[i].sg_list = &sge_list[i];
-        send_wr_list[i].num_sge = 1;
-        send_wr_list[i].opcode  = IBV_WR_SEND;
-        send_wr_list[i].send_flags = ctx->send_flags;
-      }
     }
   }
 
