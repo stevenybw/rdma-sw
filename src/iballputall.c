@@ -475,7 +475,7 @@ static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge*
   {
     struct ibv_send_wr *bad_wr = NULL;
     BEGIN_PROFILE(send_post);
-    LOGD("ibv_post_send to %d\n", rank);
+    // LOGV("ibv_post_send to %d\n", rank);
     if(err = ibv_post_send(ctx->qp_list[rank], send_wr_list, &bad_wr)) {
       LOGD("%d-th ibv_post_send returned %d, errno = %d[%s]\n", i, err, errno, strerror(errno));
       return -1;
@@ -751,6 +751,7 @@ int main(int argc, char *argv[])
     struct ibv_wc wc[64];
 
     for(count=1; count<=512; count*=2) {
+      profiler_init();
       int scnt=0, rcnt=0;
       int dst = (rank==0)?1:0;
       pp_post_send_rank_count(ctx, sge_list, send_wr_list, dst, count);
@@ -762,7 +763,7 @@ int main(int argc, char *argv[])
           return 1;
         } else if (ne >= 1) {
           BEGIN_PROFILE(wait_recv_process_msg);
-          LOGV("complete %d request\n", ne);
+          // LOGV("complete %d request\n", ne);
           int i;
           for(i=0; i<ne; i++) {
             union pingpong_wrid wr_id;
@@ -797,7 +798,7 @@ int main(int argc, char *argv[])
       pp_on_flush(ctx);
       END_PROFILE(flush);
 
-      LOGDS("%*d%*lf\n", 12, count, 12, Profiler.send_post_total_time);
+      LOGDS("%*d%*lf\n", 12, count, 12, 1e6 * Profiler.send_post_total_time / count);
       MPI_Barrier(comm_pair);
     }
   }
