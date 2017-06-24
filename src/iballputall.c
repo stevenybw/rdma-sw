@@ -23,6 +23,7 @@ struct {
   double   send_post_total_time;
   double wait_recv_total_time;
   double   wait_recv_process_msg_total_time;
+  double     wait_recv_process_msg_post_total_time;
   double   wait_recv_mpi_test_total_time;
   double flush_total_time;
 } Profiler;
@@ -108,8 +109,8 @@ static struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev,
   ctx->send_flags  = IBV_SEND_SIGNALED;
   ctx->tx_depth    = tx_depth;
   ctx->rx_depth    = rx_depth;
-  ctx->rx_win.idx = -1;
-  ctx->rx_win.len = -1;
+  ctx->rx_win.idx  = 0;
+  ctx->rx_win.len  = 0;
 
   size_t sendBufBytes = BUF_SIZE_PER_RANK * nprocs;
   size_t recvBufBytes = MAX_SRQ_WR * sizeof(u64Int);
@@ -260,45 +261,6 @@ clean_ctx:
   return NULL;
 }
 
-static int pp_post_recv_init(struct pingpong_context *ctx)
-{
-  ctx->rx_win.idx = 0;
-  ctx->rx_win.len = MAX_SRQ_WR;
-  u64Int* rx_buf  = (u64Int*) ctx->rx_win.buf;
-
-  struct ibv_sge list = {
-    .addr = (uintptr_t) NULL,
-    .length = sizeof(u64Int),
-    .lkey = ctx->rx_win.mr->lkey
-  };
-  struct ibv_recv_wr wr = {
-    .next       = NULL,
-    .sg_list    = &list,
-    .num_sge    = 1,
-  };
-  struct ibv_recv_wr *bad_wr = NULL;
-  int i, err;
-  for (i = 0; i < MAX_SRQ_WR; ++i) {
-    union pingpong_wrid wr_id = {
-      .tagid = {
-        .tag = RECV_WRID,
-        .id  = i,
-      }
-    };
-    wr.wr_id = (uint64_t) wr_id.val;
-    list.addr = (uint64_t) &rx_buf[i];
-    if (err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr)) {
-      return err;
-    }
-    if (bad_wr) {
-      LOGD("post_srq_recv has bad_wr\n");
-      return -1;
-    }
-  }
-
-  return 0;
-}
-
 static int pp_post_recv_refill(struct pingpong_context *ctx)
 {
   int          idx = ctx->rx_win.idx;
@@ -312,14 +274,12 @@ static int pp_post_recv_refill(struct pingpong_context *ctx)
     .length = sizeof(u64Int),
     .lkey = ctx->rx_win.mr->lkey
   };
-
   union pingpong_wrid wr_id = {
     .tagid = {
       .tag  = RECV_WRID,
       .id   = -1,
     }
   };
-
   struct ibv_recv_wr wr = {
     .wr_id      = (uint64_t) 0,
     .next       = NULL,
@@ -331,6 +291,7 @@ static int pp_post_recv_refill(struct pingpong_context *ctx)
   int i;
   int num_recv = MAX_SRQ_WR - len;
   int id = (idx + len) % MAX_SRQ_WR;
+  BEGIN_PROFILE(wait_recv_process_msg_post);
   for(i=0; i<num_recv; i++) {
     list.addr = (uintptr_t) &rx_buf[id];
     wr_id.tagid.id = id;
@@ -345,6 +306,7 @@ static int pp_post_recv_refill(struct pingpong_context *ctx)
     }
     id = (id + 1) % MAX_SRQ_WR;
   }
+  END_PROFILE(wait_recv_process_msg_post);
 
   return 0;
 }
@@ -487,6 +449,7 @@ static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge*
     }
   }
   send_wr_list[count-1].next = &send_wr_list[count];
+  return 0;
 }
 
 static int pp_post_send_1024(struct pingpong_context* ctx) {
@@ -604,9 +567,10 @@ int benchmark_wr_len(struct pingpong_context* ctx, struct ibv_sge* sge_list,
     const char* t4 = "post_time(us)";
     const char* t5 = "proc_time(us)";
     const char* t6 = "flush_time(us)";
+    const char* t7 = "post_recv(us)";
     if(show_result) {
-      LOGDS("%*s%*s%*s%*s%*s%*s%*s\n", RESULT_SPACE, t0, RESULT_SPACE, t1, RESULT_SPACE, t2, 
-        RESULT_SPACE, t3, RESULT_SPACE, t4, RESULT_SPACE, t5, RESULT_SPACE, t6);
+      LOGDS("%*s%*s%*s%*s%*s%*s%*s%*s\n", RESULT_SPACE, t0, RESULT_SPACE, t1, RESULT_SPACE, t2, 
+        RESULT_SPACE, t3, RESULT_SPACE, t4, RESULT_SPACE, t5, RESULT_SPACE, t6, RESULT_SPACE, t7);
     }
   }
 
@@ -674,11 +638,13 @@ int benchmark_wr_len(struct pingpong_context* ctx, struct ibv_sge* sge_list,
       double r3 = 1e6 * post_time;
       double r4 = 1e6 * process_time;
       double r5 = 1e6 * Profiler.flush_total_time;
+      double r6 = 1e6 * Profiler.wait_recv_process_msg_post_total_time / count;
 
-      LOGDS("%*d%*lf%*lf%*lf%*lf%*lf%*lf\n", RESULT_SPACE, count, RESULT_SPACE, r0, RESULT_SPACE, r1, 
-          RESULT_SPACE, r2, RESULT_SPACE, r3, RESULT_SPACE, r4, RESULT_SPACE, r5);
+      LOGDS("%*d%*lf%*lf%*lf%*lf%*lf%*lf%*lf\n", RESULT_SPACE, count, RESULT_SPACE, r0, RESULT_SPACE, r1, 
+          RESULT_SPACE, r2, RESULT_SPACE, r3, RESULT_SPACE, r4, RESULT_SPACE, r5, RESULT_SPACE, r6);
     }
   }
+  return 0;
 }
 
 int main(int argc, char *argv[])
@@ -732,7 +698,7 @@ int main(int argc, char *argv[])
   }
 
   LOGDS("  post receive\n");
-  if (pp_post_recv_init(ctx)) {
+  if (pp_post_recv_refill(ctx)) {
     LOGD("Couldn't post receive initially\n");
     return 1;
   }
