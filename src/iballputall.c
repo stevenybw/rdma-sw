@@ -418,6 +418,7 @@ static int pp_connect_ctx(struct pingpong_context *ctx, int port, enum ibv_mtu m
 /*
  * used to measure performance gain using multiple wr
  */
+#if 1
 static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge* sge_list,
                         struct ibv_send_wr* send_wr_list, int rank, int count) {
   int i, err;
@@ -451,6 +452,57 @@ static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge*
   send_wr_list[count-1].next = &send_wr_list[count];
   return 0;
 }
+#else
+/*
+ * non-aggregated version: slower about 2~3 times
+ */
+static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge* sge_list,
+                        struct ibv_send_wr* send_wr_list, int rank, int count) {
+  int i, err;
+  u64Int* tx_buf = (u64Int*) ctx->tx_buf;
+
+  struct ibv_sge list = {
+    .addr   = 0,
+    .length = sizeof(u64Int),
+    .lkey   = ctx->tx_mr->lkey,
+  };
+  union pingpong_wrid wr_id = {
+    .tagid = {
+      .tag    = SEND_WRID,
+      .id     = 0,
+    }
+  };
+  struct ibv_send_wr wr = {
+    .next       = NULL,
+    .sg_list    = &list,
+    .num_sge    = 1,
+    .opcode     = IBV_WR_SEND,
+    .send_flags = ctx->send_flags,
+  };
+
+  struct ibv_send_wr *bad_wr = NULL;
+
+  for(i=0; i<count; i++) {
+    list.addr = &tx_buf[i];
+    wr_id.tagid.id  = i;
+    wr.wr_id = wr_id.val;
+
+    BEGIN_PROFILE(send_post);
+    // LOGV("ibv_post_send to %d\n", rank);
+    if(err = ibv_post_send(ctx->qp_list[rank], &wr, &bad_wr)) {
+      LOGD("%d-th ibv_post_send returned %d, errno = %d[%s]\n", i, err, errno, strerror(errno));
+      return -1;
+    }
+    END_PROFILE(send_post);
+    if(bad_wr) {
+      LOGD("bad_wr\n");
+      return -1;
+    }
+  }
+  send_wr_list[count-1].next = &send_wr_list[count];
+  return 0;
+}
+#endif
 
 static int pp_post_send_1024(struct pingpong_context* ctx) {
   int i;
