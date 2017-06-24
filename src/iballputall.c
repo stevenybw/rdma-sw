@@ -582,6 +582,87 @@ static int pp_close_ctx(struct pingpong_context *ctx)
   return 0;
 }
 
+#define RESULT_SPACE 16
+
+int benchmark_wr_len(struct pingpong_context* ctx, struct ibv_sge* sge_list, 
+                struct ibv_send_wr* send_wr_list, MPI_Comm comm, int show_result) {
+  int count;
+  int ne, i;
+  struct ibv_wc wc[64];
+  int rank, size, absolute_rank, wranks[2];
+  MPI_Comm_rank(comm, &rank);
+  MPI_Comm_rank(MPI_COMM_WORLD, &absolute_rank);
+  MPI_Comm_size(comm, &size);
+  assert(size == 2);
+  MPI_Allgather(&absolute_rank, 1, MPI_INT, wranks, 1, MPI_INT, comm);
+
+  {
+    const char* t0  = "count";
+    const char* t1 = "post time(us)";
+    const char* t2 = "mesg rate(M/s)";
+    if(show_result) {
+      LOGDS("%*s%*s%*s\n", RESULT_SPACE, t0, RESULT_SPACE, t1, RESULT_SPACE, t2);
+    }
+  }
+
+  for(count=1; count<=512; count*=2) {
+    profiler_init();
+    int scnt=0, rcnt=0;
+    int dst = wranks[(rank==0)?1:0];
+
+    double wtime = -MPI_Wtime();
+    pp_post_send_rank_count(ctx, sge_list, send_wr_list, dst, count);
+    {
+      while(scnt!=count || rcnt!=count) {
+        ne = ibv_poll_cq(ctx->cq, 64, wc);
+        if (ne < 0) {
+          LOGD("poll CQ failed\n");
+          return 1;
+        } else if (ne >= 1) {
+          // LOGV("complete %d request\n", ne);
+          int i;
+          for(i=0; i<ne; i++) {
+            union pingpong_wrid wr_id;
+            wr_id.val = wc[i].wr_id;
+            if(wc[i].status != IBV_WC_SUCCESS) {
+              LOGD("Failed status %s (%d) for wr_id %d:%d\n", 
+                ibv_wc_status_str(wc[i].status), wc[i].status, (int) wr_id.tagid.tag, (int) wr_id.tagid.id);
+              return 1;
+            }
+            switch (wr_id.tagid.tag) {
+            case SEND_WRID:
+              scnt++;
+              // LOGV("send %d complete [%d/%d]\n", wr_id.tagid.id, scnt, count);
+              break;
+            case RECV_WRID:
+              rcnt++;
+              pp_on_recv(ctx, wr_id.tagid.id);
+              // LOGV("recv %d complete [%d/%d]\n", wr_id.tagid.id, rcnt, count);
+              break;
+            default:
+              LOGD("unknown wr_id = %d:%d\n", wr_id.tagid.tag, wr_id.tagid.id);
+              return 1;
+              break;
+            }
+          }
+        }
+      }
+    }
+    wtime += MPI_Wtime();
+
+    BEGIN_PROFILE(flush);
+    pp_on_flush(ctx);
+    END_PROFILE(flush);
+
+    MPI_Barrier(comm);
+    if(show_result) {
+      double r0 = 1e6 * Profiler.send_post_total_time / count;
+      double r1 = 1e-6 * count / wtime;
+      LOGDS("%*d%*lf%*lf\n", RESULT_SPACE, count, RESULT_SPACE, r0, RESULT_SPACE, r1);
+    }
+  }
+}
+
 int main(int argc, char *argv[])
 {
   int rank, nprocs;
@@ -739,70 +820,53 @@ int main(int argc, char *argv[])
     }
   }
 
-  MPI_Comm comm_pair;
-  MPI_Comm_split(MPI_COMM_WORLD, rank/2, rank%2, &comm_pair);
-  MPI_Barrier(MPI_COMM_WORLD);
-  profiler_init();
-  LOGDS("  benchmark ibv_post_send overhead alone\n");
-  LOGDS("%*s%*s\n", 12, "count", 12, "time(us)");
-  if(rank < 2) {
-    int count;
-    int ne, i;
-    struct ibv_wc wc[64];
-
-    for(count=1; count<=512; count*=2) {
-      profiler_init();
-      int scnt=0, rcnt=0;
-      int dst = (rank==0)?1:0;
-      pp_post_send_rank_count(ctx, sge_list, send_wr_list, dst, count);
-      BEGIN_PROFILE(wait_recv);
-      while(scnt!=count || rcnt!=count) {
-        ne = ibv_poll_cq(ctx->cq, 64, wc);
-        if (ne < 0) {
-          LOGD("poll CQ failed\n");
-          return 1;
-        } else if (ne >= 1) {
-          BEGIN_PROFILE(wait_recv_process_msg);
-          // LOGV("complete %d request\n", ne);
-          int i;
-          for(i=0; i<ne; i++) {
-            union pingpong_wrid wr_id;
-            wr_id.val = wc[i].wr_id;
-            if(wc[i].status != IBV_WC_SUCCESS) {
-              LOGD("Failed status %s (%d) for wr_id %d:%d\n", 
-                ibv_wc_status_str(wc[i].status), wc[i].status, (int) wr_id.tagid.tag, (int) wr_id.tagid.id);
-              return 1;
-            }
-            switch (wr_id.tagid.tag) {
-            case SEND_WRID:
-              scnt++;
-              // LOGV("send %d complete [%d/%d]\n", wr_id.tagid.id, scnt, count);
-              break;
-            case RECV_WRID:
-              rcnt++;
-              pp_on_recv(ctx, wr_id.tagid.id);
-              // LOGV("recv %d complete [%d/%d]\n", wr_id.tagid.id, rcnt, count);
-              break;
-            default:
-              LOGD("unknown wr_id = %d:%d\n", wr_id.tagid.tag, wr_id.tagid.id);
-              return 1;
-              break;
-            }
-          }
-          END_PROFILE(wait_recv_process_msg);
-        }
-      }
-      END_PROFILE(wait_recv);
-
-      BEGIN_PROFILE(flush);
-      pp_on_flush(ctx);
-      END_PROFILE(flush);
-
-      LOGDS("%*d%*lf\n", 12, count, 12, 1e6 * Profiler.send_post_total_time / count);
-      MPI_Barrier(comm_pair);
+  {
+    MPI_Comm comm_pair;
+    MPI_Comm_split(MPI_COMM_WORLD, rank/2, rank%2, &comm_pair);
+    MPI_Barrier(MPI_COMM_WORLD);
+    profiler_init();
+    if(rank < 2) {
+      LOGDS("  message rate benchmark (intra-node, 1 pair)\n");
+      benchmark_wr_len(ctx, sge_list, send_wr_list, comm_pair, 0); // skip
+      benchmark_wr_len(ctx, sge_list, send_wr_list, comm_pair, 1);
     }
+    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Comm_free(&comm_pair);
   }
-  MPI_Barrier(MPI_COMM_WORLD);
+
+  if (nprocs >= 4) {
+    LOGDS("  message rate benchmark (intra-node, 2 pair)\n");
+    MPI_Comm comm_pair;
+    MPI_Comm_split(MPI_COMM_WORLD, rank/2, rank%2, &comm_pair);
+    MPI_Barrier(MPI_COMM_WORLD);
+    profiler_init();
+    if(rank < 4) {
+      benchmark_wr_len(ctx, sge_list, send_wr_list, comm_pair, 0); // skip
+      benchmark_wr_len(ctx, sge_list, send_wr_list, comm_pair, 1);
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Comm_free(&comm_pair);
+  } else {
+    LOGDS("  message rate benchmark (intra-node, 2 pair) skip...\n");
+  }
+
+  if (nprocs >= 8) {
+    MPI_Comm comm_pair;
+    MPI_Comm_split(MPI_COMM_WORLD, rank%4, rank/4, &comm_pair);
+    MPI_Barrier(MPI_COMM_WORLD);
+    profiler_init();
+    if(rank < 8) {
+      if(rank%4 < 4) {
+        LOGDS("  message rate benchmark (inter-node, 4 pair)\n");
+        benchmark_wr_len(ctx, sge_list, send_wr_list, comm_pair, 0); // skip
+        benchmark_wr_len(ctx, sge_list, send_wr_list, comm_pair, 1);
+      }
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Comm_free(&comm_pair);
+  } else {
+    LOGDS("  message rate benchmark (inter-node) skip...\n");
+  }
 
   if (gettimeofday(&start, NULL)) {
     perror("gettimeofday");
