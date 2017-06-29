@@ -25,6 +25,9 @@ src/ympi.o: src/ympi.c include/ympi.h include/common.h
 test/test_ympi: test/test_ympi.c src/ympi.c include/ympi.h include/common.h
 	mpicc $(CFLAGS) -o test/test_ympi -I/usr/sw-mpp/include -Iinclude test/test_ympi.c src/ympi.c
 
+test/test_ympi_coll: test/test_ympi_coll.c src/ympi.c include/ympi.h include/common.h
+	mpicc $(CFLAGS) -o test/test_ympi_coll -I/usr/sw-mpp/include -Iinclude test/test_ympi_coll.c src/ympi.c
+
 test/test_ympi.x86: test/test_ympi.c src/ympi.c include/ympi.h include/common.h
 	/usr/sw-mpp/mpi2_x86/bin/mpicc -L/usr/sw-cluster/slurm-16.05.3/lib $(CFLAGS_X86) -o test/test_ympi.x86 test/test_ympi.c src/ympi.c
 
