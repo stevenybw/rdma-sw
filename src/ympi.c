@@ -31,7 +31,7 @@ typedef union YMPID_Wrid {
     uint32_t id;
   } tagid;
   uint64_t val;
-};
+} YMPID_Wrid;
 
 enum {
   RECV_WRID = 1,
@@ -47,7 +47,7 @@ typedef struct YMPID_Context {
   struct ibv_pd       *pd;
   struct ibv_cq       *cq;
   struct ibv_srq      *srq;
-  struct rx_win_s      rx_win;
+  YMPID_Recv_win       rx_win;
   struct ibv_qp      **qp_list;
 
   struct ibv_sge     *recv_sge_list;
@@ -61,16 +61,16 @@ typedef struct YMPID_Context {
 
 static YMPID_Context *ctx;
 
-static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int port, int rank, int nprocs)
+static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_port, int rank, int nprocs)
 {
   ctx = malloc(sizeof(*ctx));
   if (!ctx)
     return NULL;
 
-  ctx->port        = port;
+  ctx->port        = ib_port;
   ctx->rank        = rank;
   ctx->nprocs      = nprocs;
-  ctx->send_flags  = IBV_SEND_SIGNALED;
+  //ctx->send_flags  = IBV_SEND_SIGNALED;
 
   ctx->context = ibv_open_device(ib_dev);
   if (!ctx->context) {
@@ -101,7 +101,7 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int port, 
   {
     struct ibv_srq_init_attr attr = {
       .attr = {
-        .max_wr  = MAX_SRQ_WR,
+        .max_wr  = 2 * YMPI_PREPOST_DEPTH,
         .max_sge = 1
       }
     };
@@ -116,14 +116,14 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int port, 
   // create rx_win
   {
     int access_flags = IBV_ACCESS_LOCAL_WRITE;
-    u64Int         *buf = NULL;
+    void           *buf = NULL;
     struct ibv_mr  *mr  = NULL;
 
     size_t bytes = YMPI_PREPOST_DEPTH * YMPI_VBUF_BYTES;
     ctx->rx_win.buffer.bytes = bytes;
     ctx->rx_win.idx  = 0;
     ctx->rx_win.len  = 0;
-    buf              = memalign(PAGE_SIZE, bytes);  NZ(buf);
+    buf              = memalign(YMPI_PAGE_SIZE, bytes);  NZ(buf);
     memset(buf, 0x7b, bytes);
     ctx->rx_win.buffer.buf   = buf;
     mr = ibv_reg_mr(ctx->pd, buf, bytes, access_flags);
@@ -172,7 +172,7 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int port, 
       struct ibv_qp_attr attr = {
         .qp_state        = IBV_QPS_INIT,
         .pkey_index      = 0,
-        .port_num        = port,
+        .port_num        = ib_port,
         .qp_access_flags = 0
       };
 
@@ -201,7 +201,7 @@ clean_qp:
 }
 
 clean_qp_list:
-  free(ctx->qp_list[i]);
+  free(ctx->qp_list);
 
 clean_rx_win:
 {
@@ -234,6 +234,8 @@ clean_ctx:
 }
 
 static int YMPID_Context_destroy(YMPID_Context* ctx) {
+  int nprocs = ctx->nprocs;
+
 clean_qp:
 {
   int i;
@@ -246,7 +248,7 @@ clean_qp:
 }
 
 clean_qp_list:
-  free(ctx->qp_list[i]);
+  free(ctx->qp_list);
 
 clean_rx_win:
 {
@@ -274,13 +276,15 @@ clean_device:
 
 clean_ctx:
   free(ctx);
+
+  return 0;
 }
 
 static int YMPID_Recv_win_refill(YMPID_Context* ctx) {
   int       idx = ctx->rx_win.idx;
   int       len = ctx->rx_win.len;
   char*     buf = (char*) ctx->rx_win.buffer.buf;
-  size_t    bytes  = ctx->rx_win.buffer.bytes;
+  //size_t    bytes  = ctx->rx_win.buffer.bytes;
 
   struct ibv_sge* recv_sge_list = ctx->recv_sge_list;
   struct ibv_recv_wr* recv_wr_list = ctx->recv_wr_list;
@@ -305,8 +309,8 @@ static int YMPID_Recv_win_refill(YMPID_Context* ctx) {
   recv_wr_list[num_recv-1].next = NULL;
 
   int err;
-  if (err = ibv_post_srq_recv(ctx->srq, recv_wr_list, &bad_wr)) {
-    LOGD("ibv_post_srq_recv failed\n");
+  if ((err = ibv_post_srq_recv(ctx->srq, recv_wr_list, &bad_wr))) {
+    LOGD("ibv_post_srq_recv failed with %d, errno=%d [%s]\n", err, errno, strerror(errno));
     return err;
   }
   if (bad_wr) {
@@ -321,12 +325,12 @@ static int YMPID_Recv_win_refill(YMPID_Context* ctx) {
 }
 
 static int YMPID_Context_connect(YMPID_Context *ctx, enum ibv_mtu mtu, 
-              int sl, int sgid_idx, int* local_psn_list, int* remote_lid_list, 
+              int sl, int* local_psn_list, int* remote_lid_list, 
               int* remote_psn_list, int* remote_qpn_list)
 {
   int i;
   int port = ctx->port;
-  int rank = ctx->rank;
+  // int rank = ctx->rank;
   int nprocs = ctx->nprocs;
 
   for(i=0; i<nprocs; i++) {
@@ -386,32 +390,32 @@ static int YMPID_Context_connect(YMPID_Context *ctx, enum ibv_mtu mtu,
 }
 
 
-int YMPI_Alloc(YMPI_Rdma_buffer& buffer, size_t bytes) {
-  struct YMPI_Rdma_buffer_s *buffer_s;
+int YMPI_Alloc(YMPI_Rdma_buffer* buffer, size_t bytes) {
+  YMPID_Rdma_buffer *buffer_d = NULL;
   int access_flags = IBV_ACCESS_LOCAL_WRITE;
 
-  buffer_s = malloc(sizeof(struct YMPI_Rdma_buffer_s)); NZ(buffer_s);
-  buffer_s->buf   = memalign(PAGE_SIZE, bytes); NZ(buffer_s->buf);
-  memset(buffer_s->buf, 0x7b, bytes);
-  buffer_s->bytes = bytes;
-  buffer_s->mr    = ibv_reg_mr(ctx->pd, buffer_s->buf, bytes, access_flags); NZ(buffer_s->mr);
-  buffer = (uintptr_t) buffer_s;
+  buffer_d = malloc(sizeof(YMPID_Rdma_buffer)); NZ(buffer_d);
+  buffer_d->buf   = memalign(YMPI_PAGE_SIZE, bytes); NZ(buffer_d->buf);
+  memset(buffer_d->buf, 0x7b, bytes);
+  buffer_d->bytes = bytes;
+  buffer_d->mr    = ibv_reg_mr(ctx->pd, buffer_d->buf, bytes, access_flags); NZ(buffer_d->mr);
+  (*buffer) = (uintptr_t) buffer_d;
 
   return 0;
 }
 
-int YMPI_Dealloc(YMPI_Rdma_buffer& buffer) {
-  struct YMPI_Rdma_buffer_s *buffer_s = (struct YMPI_Rdma_buffer_s *) buffer;
-  ZERO(ibv_dereg_mr(buffer_s->mr));
-  free(buffer_s->buf);
-  free(buffer_s);
+int YMPI_Dealloc(YMPI_Rdma_buffer* buffer) {
+  YMPID_Rdma_buffer *buffer_d = (YMPID_Rdma_buffer*) (*buffer);
+  ZERO(ibv_dereg_mr(buffer_d->mr));
+  free(buffer_d->buf);
+  free(buffer_d);
 
   return 0;
 }
 
 int YMPI_Get_buffer(YMPI_Rdma_buffer buffer, uintptr_t* buf) {
-  struct YMPI_Rdma_buffer_s *buffer_s = (struct YMPI_Rdma_buffer_s *) buffer;
-  (*buf) = buffer_s->buf;
+  YMPID_Rdma_buffer *buffer_d = (YMPID_Rdma_buffer*) buffer;
+  (*buf) = (uintptr_t) buffer_d->buf;
 
   return 0;
 }
@@ -488,19 +492,24 @@ int YMPI_Init(int *argc, char ***argv) {
     }
   }
 
-  // exchange address
+  // exchange address & establish connection
   {
+    int i;
+    int  local_lid = -1;
+    int *local_psn_list = NULL;
+    int *local_qpn_list = NULL;
+    int *remote_lid_list = NULL;
+    int *remote_psn_list = NULL;
+    int *remote_qpn_list = NULL;
     LOGDS("  exchange address\n");
-    int lid = ctx->portinfo.lid;
-    if (!lid) {
+    local_lid = ctx->portinfo.lid;
+    if (!local_lid) {
       fprintf(stderr, "Couldn't get local LID\n");
       return 1;
     }
-    int i;
     local_psn_list = (int*) malloc(nprocs * sizeof(int)); NZ(local_psn_list);
     local_qpn_list = (int*) malloc(nprocs * sizeof(int)); NZ(local_qpn_list);
 
-    local_lid = ctx->portinfo.lid;
     for(i=0; i<nprocs; i++) {
       local_qpn_list[i] = ctx->qp_list[i]->qp_num;
       local_psn_list[i] = lrand48() & 0xffffff;
@@ -525,15 +534,18 @@ int YMPI_Init(int *argc, char ***argv) {
     LOGDS("    MPI_Allgather lid_list...\n");
     MPI_Allgather(&local_lid, 1, MPI_INT, remote_lid_list, 1, MPI_INT, MPI_COMM_WORLD);
     LOGDS("    MPI_Allgather Complete\n");
-  }
 
-  // establish connection
-  {
+
+
     LOGDS("  establish connection\n");
-    if (YMPID_Context_connect(ctx, mtu, sl, gidx, local_psn_list, remote_lid_list, remote_psn_list, remote_qpn_list)) {
+    enum ibv_mtu mtu = IBV_MTU_2048;
+    int          sl  = 0;
+    if (YMPID_Context_connect(ctx, mtu, sl, local_psn_list, remote_lid_list, remote_psn_list, remote_qpn_list)) {
       return -1;
     }
   }
+
+  return 0;
 }
 
 int YMPI_Finalize() {
@@ -543,19 +555,25 @@ int YMPI_Finalize() {
   if(MPI_SUCCESS != MPI_Finalize()) {
     return -1;
   }
+
+  return 0;
 }
 
 // post the **buffer** with specific **length of bytes** to **dest**
-int YMPI_Post_send(const void* buf, size_t bytes, int dest) {
+int YMPI_Post_send(YMPI_Rdma_buffer buffer, size_t bytes, int dest) {
 
+  return 0;
 }
 
 // wait for exactly **num_message** messages, return the array of pointers, and the length for each message by argument.
 int YMPI_Expect(int num_message, void* recv_buffers[], uint64_t recv_buffers_len[]) {
 
+  return 0;
 }
 
 // return the buffer to the window
 int YMPI_Return(int num_message, void* recv_buffers[]) {
 
+  return 0;
 }
+

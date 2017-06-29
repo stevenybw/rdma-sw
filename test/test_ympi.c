@@ -9,8 +9,9 @@
 int main(void) {
 	YMPI_Init(NULL, NULL);
 
-	LOG("Testing YMPI...\n");
+	LOGDS("Testing YMPI...\n");
 
 	YMPI_Finalize();
 	return 0;
 }
+

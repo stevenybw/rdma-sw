@@ -425,7 +425,6 @@ static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge*
   int i, err;
   u64Int* tx_buf = (u64Int*) ctx->tx_buf;
 
-  send_wr_list[count-1].next = NULL;
   for(i=0; i<count; i++) {
     union pingpong_wrid wr_id = {
       .tagid = {
@@ -436,21 +435,20 @@ static int pp_post_send_rank_count(struct pingpong_context* ctx, struct ibv_sge*
     sge_list[i].addr = (uint64_t) &tx_buf[i];
     send_wr_list[i].wr_id = wr_id.val;
   }
-  {
+  BEGIN_PROFILE(send_post);
+  for(i=0; i<count; i++) {
     struct ibv_send_wr *bad_wr = NULL;
-    BEGIN_PROFILE(send_post);
     // LOGV("ibv_post_send to %d\n", rank);
-    if(err = ibv_post_send(ctx->qp_list[rank], send_wr_list, &bad_wr)) {
+    if(err = ibv_post_send(ctx->qp_list[rank], &send_wr_list[i], &bad_wr)) {
       LOGD("%d-th ibv_post_send returned %d, errno = %d[%s]\n", i, err, errno, strerror(errno));
       return -1;
     }
-    END_PROFILE(send_post);
     if(bad_wr) {
       LOGD("bad_wr\n");
       return -1;
     }
   }
-  send_wr_list[count-1].next = &send_wr_list[count];
+  END_PROFILE(send_post);
   return 0;
 }
 #else
@@ -777,7 +775,7 @@ int main(int argc, char *argv[])
         send_wr_list[i].opcode  = IBV_WR_SEND;
         send_wr_list[i].send_flags = ctx->send_flags;
       } else {
-        send_wr_list[i].next    = &send_wr_list[i+1];
+        send_wr_list[i].next    = NULL;
         send_wr_list[i].sg_list = &sge_list[i];
         send_wr_list[i].num_sge = 1;
         send_wr_list[i].opcode  = IBV_WR_SEND;
