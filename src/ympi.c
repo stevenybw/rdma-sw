@@ -464,11 +464,11 @@ int YMPI_Init(int *argc, char ***argv) {
       memset(recv_sge_list, 0, YMPI_PREPOST_DEPTH * sizeof(struct ibv_sge));
       memset(recv_wr_list , 0, YMPI_PREPOST_DEPTH * sizeof(struct ibv_recv_wr));
 
-      for(i=0; i<1024; i++) {
+      for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
         recv_sge_list[i].length = YMPI_VBUF_BYTES;
         recv_sge_list[i].lkey   = ctx->rx_win.buffer.mr->lkey;
 
-        if(i == 1023) {
+        if(i == (YMPI_PREPOST_DEPTH-1)) {
           recv_wr_list[i].next    = NULL;
           recv_wr_list[i].sg_list = &recv_sge_list[i];
           recv_wr_list[i].num_sge = 1;
@@ -480,7 +480,7 @@ int YMPI_Init(int *argc, char ***argv) {
       }
     }
     ctx->recv_sge_list = recv_sge_list;
-    ctx->recv_wr_list  = recv_wr_list; 
+    ctx->recv_wr_list  = recv_wr_list;
   }
 
   // pre-post receive requests

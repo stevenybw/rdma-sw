@@ -22,7 +22,7 @@ test/test_ympi: test/test_ympi.c src/ympi.c include/ympi.h include/common.h
 	mpicc $(CFLAGS) -o test/test_ympi -I/usr/sw-mpp/include -Iinclude test/test_ympi.c src/ympi.c
 
 test/test_ympi.x86: test/test_ympi.c src/ympi.c include/ympi.h include/common.h
-	/usr/sw-mpp/mpi2_x86/bin/mpicc -L/usr/sw-cluster/slurm-16.05.3/lib -DX86 $(CFLAGS) -o test/test_ympi.x86 -Iinclude test/test_ympi.c src/ympi.c
+	/usr/sw-mpp/mpi2_x86/bin/mpicc -L/usr/sw-cluster/slurm-16.05.3/lib -DX86 $(CFLAGS) -g -o test/test_ympi.x86 -Iinclude test/test_ympi.c src/ympi.c
 
 clean:
 	rm -f $(TARGET)
