@@ -122,8 +122,7 @@ int main(void) {
       for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
         printf("recv_buffers_len[%d]  = %llu\n", i, recv_buffers_len[i]);
         assert(recv_buffers_len[i] == 0);
-        printf("recv_buffers[%d]    = %p\n", i, recv_buffers[i]);
-        assert(recv_buffers[i] == NULL);
+        printf("recv_buffers[%d]    = %p [%llu]\n", i, recv_buffers[i], *(recv_buffers[i]));
       }
       YMPI_Return();
     }

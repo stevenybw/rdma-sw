@@ -280,10 +280,19 @@ clean_ctx:
   return 0;
 }
 
+/*
+ * TODO
+ * PHENOMENA the order of request id may be different to the posted order,
+ * i.e. assume we post in the 0,1,2,3,... order, we may recv in 2,0,1,3,...
+ * EXPLANATION  The QP will fetch a WR from SRQ upon receiving a IBV_SEND,
+ * possibly caused by multiple QP can process message concurrently, causing
+ * completion order different from fetching order.
+ */
+
 static inline int YMPID_Recv_win_recv(int id) {
   int idx = ctx->rx_win.idx;
   int len = ctx->rx_win.len;
-  assert(idx == id);
+  // assert(idx == id);
   idx = (idx + 1) % YMPI_PREPOST_DEPTH;
   len = len - 1;
   assert(len >= 0);
@@ -606,10 +615,15 @@ int YMPI_Post_send(YMPI_Rdma_buffer buffer, size_t offset, size_t bytes, int des
     .send_flags = send_flags,
   };
 
+  if(bytes == 0) {
+    wr.sg_list = NULL;
+    wr.num_sge = 0;
+  }
+
   struct ibv_send_wr* bad_wr = NULL;
 
   int err;
-  if(err = ibv_post_send(ctx->qp_list[dest], &wr, &bad_wr)) {
+  if((err = ibv_post_send(ctx->qp_list[dest], &wr, &bad_wr))) {
     LOGD("ibv_post_send to %d returned %d, errno = %d[%s]\n", dest, err, errno, strerror(errno));
     return -1;
   }
