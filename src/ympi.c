@@ -35,6 +35,7 @@ typedef union YMPID_Wrid {
 
 enum {
   RECV_WRID = 1,
+  SEND_WRID = 2,
 };
 
 /*
@@ -280,7 +281,6 @@ clean_ctx:
 }
 
 static inline int YMPID_Recv_win_recv(int id) {
-  int err;
   int idx = ctx->rx_win.idx;
   int len = ctx->rx_win.len;
   assert(idx == id);
@@ -289,6 +289,8 @@ static inline int YMPID_Recv_win_recv(int id) {
   assert(len >= 0);
   ctx->rx_win.idx = idx;
   ctx->rx_win.len = len;
+
+  return 0;
 }
 
 static int YMPID_Recv_win_refill(YMPID_Context* ctx) {
@@ -590,7 +592,7 @@ int YMPI_Post_send(YMPI_Rdma_buffer buffer, size_t offset, size_t bytes, int des
   };
 
   struct ibv_sge sge = {
-    .addr   = &((char*) buffer_d->buf)[offset],
+    .addr   = (uint64_t) &((char*) buffer_d->buf)[offset],
     .length = bytes,
     .lkey   = buffer_d->mr->lkey,
   };
@@ -604,10 +606,11 @@ int YMPI_Post_send(YMPI_Rdma_buffer buffer, size_t offset, size_t bytes, int des
     .send_flags = send_flags,
   };
 
-  ibv_send_wr* bad_wr = NULL;
+  struct ibv_send_wr* bad_wr = NULL;
 
+  int err;
   if(err = ibv_post_send(ctx->qp_list[dest], &wr, &bad_wr)) {
-    LOGD("%d-th ibv_post_send returned %d, errno = %d[%s]\n", i, err, errno, strerror(errno));
+    LOGD("ibv_post_send to %d returned %d, errno = %d[%s]\n", dest, err, errno, strerror(errno));
     return -1;
   }
 
@@ -621,12 +624,13 @@ int YMPI_Post_send(YMPI_Rdma_buffer buffer, size_t offset, size_t bytes, int des
 
 // wait for exactly **num_message** messages, return the array of pointers, and the length for each message by argument.
 int YMPI_Expect(int num_send, int num_message, void* recv_buffers[], uint64_t recv_buffers_len[]) {
+  int ne;
   int scnt = 0;
   int rcnt = 0;
   struct ibv_wc wc[64];
-  char* rx_buf = ctx->rx_win.buf;
+  char* rx_buf = ctx->rx_win.buffer.buf;
 
-  while(rcnt < num_message && scnt < num_send) {
+  while(rcnt < num_message || scnt < num_send) {
     ne = ibv_poll_cq(ctx->cq, 64, wc);
     if (ne < 0) {
       LOGD("poll CQ failed\n");
