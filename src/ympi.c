@@ -70,7 +70,6 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
   ctx->port        = ib_port;
   ctx->rank        = rank;
   ctx->nprocs      = nprocs;
-  //ctx->send_flags  = IBV_SEND_SIGNALED;
 
   ctx->context = ibv_open_device(ib_dev);
   if (!ctx->context) {
@@ -278,6 +277,18 @@ clean_ctx:
   free(ctx);
 
   return 0;
+}
+
+static inline int YMPID_Recv_win_recv(int id) {
+  int err;
+  int idx = ctx->rx_win.idx;
+  int len = ctx->rx_win.len;
+  assert(idx == id);
+  idx = (idx + 1) % YMPI_PREPOST_DEPTH;
+  len = len - 1;
+  assert(len >= 0);
+  ctx->rx_win.idx = idx;
+  ctx->rx_win.len = len;
 }
 
 static int YMPID_Recv_win_refill(YMPID_Context* ctx) {
@@ -560,20 +571,106 @@ int YMPI_Finalize() {
 }
 
 // post the **buffer** with specific **length of bytes** to **dest**
-int YMPI_Post_send(YMPI_Rdma_buffer buffer, size_t bytes, int dest) {
+int YMPI_Post_send(YMPI_Rdma_buffer buffer, size_t offset, size_t bytes, int dest) {
+  int send_flags;
+  YMPID_Rdma_buffer* buffer_d = (YMPID_Rdma_buffer*) buffer;
+  assert(offset + bytes <= buffer_d->bytes);
+
+  if (bytes < ctx->max_inline_data) {
+    send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+  } else {
+    send_flags = IBV_SEND_SIGNALED;
+  }
+
+  YMPID_Wrid wr_id = {
+    .tagid = {
+      .tag = SEND_WRID,
+      .id  = dest,
+    }
+  };
+
+  struct ibv_sge sge = {
+    .addr   = &((char*) buffer_d->buf)[offset],
+    .length = bytes,
+    .lkey   = buffer_d->mr->lkey,
+  };
+
+  struct ibv_send_wr wr = {
+    .wr_id      = (uint64_t) wr_id.val,
+    .next       = NULL,
+    .sg_list    = &sge,
+    .num_sge    = 1,
+    .opcode     = IBV_WR_SEND,
+    .send_flags = send_flags,
+  };
+
+  ibv_send_wr* bad_wr = NULL;
+
+  if(err = ibv_post_send(ctx->qp_list[dest], &wr, &bad_wr)) {
+    LOGD("%d-th ibv_post_send returned %d, errno = %d[%s]\n", i, err, errno, strerror(errno));
+    return -1;
+  }
+
+  if(bad_wr) {
+    LOGD("bad_wr\n");
+    return -1;
+  }
 
   return 0;
 }
 
 // wait for exactly **num_message** messages, return the array of pointers, and the length for each message by argument.
-int YMPI_Expect(int num_message, void* recv_buffers[], uint64_t recv_buffers_len[]) {
+int YMPI_Expect(int num_send, int num_message, void* recv_buffers[], uint64_t recv_buffers_len[]) {
+  int scnt = 0;
+  int rcnt = 0;
+  struct ibv_wc wc[64];
+  char* rx_buf = ctx->rx_win.buf;
+
+  while(rcnt < num_message && scnt < num_send) {
+    ne = ibv_poll_cq(ctx->cq, 64, wc);
+    if (ne < 0) {
+      LOGD("poll CQ failed\n");
+      exit(-1);
+    } else if (ne >= 1) {
+      //LOGV("complete %d request\n", ne);
+      int i;
+      for(i=0; i<ne; i++) {
+        YMPID_Wrid wr_id;
+        wr_id.val = wc[i].wr_id;
+        if(wc[i].status != IBV_WC_SUCCESS) {
+          LOGD("Failed status %s (%d) for wr_id %d:%d\n", 
+            ibv_wc_status_str(wc[i].status), wc[i].status, (int) wr_id.tagid.tag, (int) wr_id.tagid.id);
+          exit(-1);
+        }
+        switch ((int) wr_id.tagid.tag) {
+        case SEND_WRID:
+          scnt++;
+          //LOGV("send complete [%d/%d]\n", scnt, num_sent);
+          break;
+
+        case RECV_WRID:
+          recv_buffers[rcnt]     = &rx_buf[ctx->rx_win.idx * YMPI_VBUF_BYTES];
+          recv_buffers_len[rcnt] = wc[i].byte_len;
+          YMPID_Recv_win_recv(wr_id.tagid.id);
+          rcnt++;
+          //LOGV("recv complete [%d]\n", rcnt);
+          break;
+
+        default:
+          LOGD("unknown wr_id = %d:%d\n", wr_id.tagid.tag, wr_id.tagid.id);
+          return 1;
+          break;
+        }
+      }
+    }
+  }
 
   return 0;
 }
 
 // return the buffer to the window
-int YMPI_Return(int num_message, void* recv_buffers[]) {
-
+int YMPI_Return() {
+  YMPID_Recv_win_refill(ctx);
   return 0;
 }
 
