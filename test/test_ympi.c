@@ -22,7 +22,7 @@ int main(void) {
   if(rank == 0) {
     YMPI_Rdma_buffer send_buffer;
     uint64_t* sb = NULL;
-        uintptr_t sb_ptr = 0;
+    uintptr_t sb_ptr = 0;
     YMPI_Alloc(&send_buffer, 1024);
     YMPI_Get_buffer(send_buffer, &sb_ptr);
     sb = (uint64_t*) sb_ptr;
@@ -40,14 +40,11 @@ int main(void) {
     memset(recv_buffers_len, 0, sizeof(recv_buffers_len));
     YMPI_Expect(0, YMPI_PREPOST_DEPTH, recv_buffers, recv_buffers_len);
 
-    printf("recv_buffer   = %p\n", recv_buffer);
-    printf("recv_buffer_len = %d\n", recv_buffer_len);
-    assert(recv_buffer_len == 1024);
     for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
-      printf("recv_buffers_len[%d]  = %d\n", i, recv_buffers_len[i]);
+      printf("recv_buffers_len[%d]  = %llu\n", i, recv_buffers_len[i]);
       assert(recv_buffers_len[i] == sizeof(uint64_t));
       printf("recv_buffers[%d]    = %p (*%llu)\n", i, recv_buffers[i], *(recv_buffers[i]));
-      assert(*(recv_buffer[i]) == i);
+      assert(*(recv_buffers[i]) == (0x1111111111111111 + i));
     }
     YMPI_Return();
   }
