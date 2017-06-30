@@ -30,18 +30,20 @@ int main(void) {
       assert(sb != NULL);
       for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
         sb[i] = 0x1111111111111111 + i;
-        YMPI_Post_send(send_buffer, i * sizeof(uint64_t), sizeof(uint64_t), 1);
+        YMPI_Zsend(send_buffer, i * sizeof(uint64_t), sizeof(uint64_t), 1);
       }
-      YMPI_Expect(YMPI_PREPOST_DEPTH, 0, NULL, NULL);
+      //YMPI_Expect(YMPI_PREPOST_DEPTH, 0, NULL, NULL);
+      YMPI_Zflush();
       YMPI_Dealloc(&send_buffer);
     } else if(rank == 1) {
       uint64_t* recv_buffers[YMPI_PREPOST_DEPTH];
       uint64_t  recv_buffers_len[YMPI_PREPOST_DEPTH];
       memset(recv_buffers, 0, sizeof(recv_buffers));
       memset(recv_buffers_len, 0, sizeof(recv_buffers_len));
-      YMPI_Expect(0, YMPI_PREPOST_DEPTH, recv_buffers, recv_buffers_len);
+      //YMPI_Expect(0, YMPI_PREPOST_DEPTH, recv_buffers, recv_buffers_len);
 
       for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
+        YMPI_Zrecv(&recv_buffers[i], &recv_buffers_len[i], 0);
         printf("recv_buffers_len[%d]  = %llu\n", i, recv_buffers_len[i]);
         assert(recv_buffers_len[i] == sizeof(uint64_t));
         printf("recv_buffers[%d]    = %p (*%llu)\n", i, recv_buffers[i], *(recv_buffers[i]));
@@ -70,9 +72,9 @@ int main(void) {
       for(k=0; k<iters; k++) {
         for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
           sb[i] = 0x1111111111111111 + i;
-          YMPI_Post_send(send_buffer, i * sizeof(uint64_t), sizeof(uint64_t), 1);
+          YMPI_Zsend(send_buffer, i * sizeof(uint64_t), sizeof(uint64_t), 1);
         }
-        YMPI_Expect(YMPI_PREPOST_DEPTH, 0, NULL, NULL);
+        YMPI_Zflush();
       }
       wsec += MPI_Wtime();
 
@@ -85,7 +87,9 @@ int main(void) {
 
       wsec = -MPI_Wtime();
       for(k=0; k<iters; k++) {
-        YMPI_Expect(0, YMPI_PREPOST_DEPTH, recv_buffers, recv_buffers_len);
+        for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
+          YMPI_Zrecv(&recv_buffers[i], &recv_buffers_len[i], 0);
+        }
         YMPI_Return();
       }
       wsec += MPI_Wtime();
@@ -108,18 +112,18 @@ int main(void) {
       assert(sb != NULL);
       for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
         sb[i] = 0x1111111111111111 + i;
-        YMPI_Post_send(send_buffer, i * sizeof(uint64_t), 0, 1);
+        YMPI_Zsend(send_buffer, i * sizeof(uint64_t), 0, 1);
       }
-      YMPI_Expect(YMPI_PREPOST_DEPTH, 0, NULL, NULL);
+      YMPI_Zflush();
       YMPI_Dealloc(&send_buffer);
     } else if(rank == 1) {
       uint64_t* recv_buffers[YMPI_PREPOST_DEPTH];
       uint64_t  recv_buffers_len[YMPI_PREPOST_DEPTH];
       memset(recv_buffers, 0, sizeof(recv_buffers));
       memset(recv_buffers_len, 0, sizeof(recv_buffers_len));
-      YMPI_Expect(0, YMPI_PREPOST_DEPTH, recv_buffers, recv_buffers_len);
 
       for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
+        YMPI_Zrecv(&recv_buffers[i], &recv_buffers_len[i], 0);
         printf("recv_buffers_len[%d]  = %llu\n", i, recv_buffers_len[i]);
         assert(recv_buffers_len[i] == 0);
         printf("recv_buffers[%d]    = %p [%llu]\n", i, recv_buffers[i], *(recv_buffers[i]));
