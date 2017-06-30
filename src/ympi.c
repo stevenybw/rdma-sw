@@ -21,31 +21,47 @@ typedef struct YMPID_Rdma_buffer {
 
 typedef struct YMPID_Pending_buffer {
   void                        *buf;
-  uint64_t                    len;
+  uint64_t                     len;
   struct YMPID_Pending_buffer *next;
 } YMPID_Pending_buffer;
 
+typedef struct YMPID_Pending_buffer_list {
+  YMPID_Pending_buffer        *free_pool;
+  YMPID_Pending_buffer        *head;
+  YMPID_Pending_buffer        *tail;
+} YMPID_Pending_buffer_list;
+
 typedef struct YMPID_Recv_win {
-  YMPID_Rdma_buffer      buffer;
-  YMPID_Pending_buffer  *pending_buffer_list;
-  YMPID_Pending_buffer **pending_index;
-  int                    idx;
-  int                    len;
-  int                    num_acknowledged;
-  int                    num_garbage;
+  YMPID_Rdma_buffer          buffer;
+  YMPID_Pending_buffer_list  pending_free_list;
+  YMPID_Pending_buffer_list *pending_recv_queue;
+  int                        idx;
+  int                        len;
+  int                        num_acknowledged;
+  int                        num_garbage;
 } YMPID_Recv_win;
 
-static inline YMPID_Pending_buffer* YMPID_Pending_buffer_fetch(YMPID_Pending_buffer* head) {
-  YMPID_Pending_buffer* ret = head->next;
+static inline YMPID_Pending_buffer* YMPID_Pending_buffer_fetch(YMPID_Pending_buffer_list* list) {
+  YMPID_Pending_buffer* ret = list->head;
   if(ret != NULL) {
-    head->next = ret->next;
+    if(list->head == list->tail) {
+      list->head = NULL;
+      list->tail = NULL;
+    } else {
+      list->head = ret->next;
+    }
   }
   return ret;
 }
 
-static inline void YMPID_Pending_buffer_insert(YMPID_Pending_buffer* head, YMPID_Pending_buffer* e) {
-  e->next = head->next;
-  head->next = e;
+static inline void YMPID_Pending_buffer_insert(YMPID_Pending_buffer_list* list, YMPID_Pending_buffer* e) {
+  if(list->head == NULL) {
+    list->head = e;
+    list->tail = e;
+  } else {
+    list->tail->next = e;
+    list->tail = e;
+  }
 }
 
 typedef union YMPID_Wrid {
@@ -88,7 +104,9 @@ typedef struct YMPID_Context {
 static YMPID_Context *ctx;
 
 static inline int YMPID_Qpn_rank(int qpn) {
-  return ctx->qp_rank[qpn % YMPI_QPN_HASH_SIZE];
+  int rank = ctx->qp_rank[qpn % YMPI_QPN_HASH_SIZE];
+  assert(rank >= 0);
+  return rank;
 }
 
 static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_port, int rank, int nprocs)
@@ -164,25 +182,26 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
       goto clean_srq;
     }
 
-    int i;
-    YMPID_Pending_buffer *pending_buffer_list = (YMPID_Pending_buffer*)  malloc((YMPI_PREPOST_DEPTH+nprocs+1) * sizeof(YMPID_Pending_buffer));
-    YMPID_Pending_buffer **pending_index      = (YMPID_Pending_buffer**) malloc(nprocs * sizeof(uintptr_t));
-    NZ(pending_buffer_list); memset(pending_buffer_list, 0, (YMPI_PREPOST_DEPTH+nprocs+1) * sizeof(YMPID_Pending_buffer));
-    NZ(pending_index); memset(pending_index, 0, nprocs * sizeof(uintptr_t));
-    for(i=0; i<nprocs; i++) {
-      pending_index[i] = &pending_buffer_list[i+1]; //link list with head element
-    }
-    pending_buffer_list[0].next = &pending_buffer_list[nprocs+1];
-    for(i=nprocs+1; i<nprocs+YMPI_PREPOST_DEPTH+1; i++) {
-      if(i == (nprocs+YMPI_PREPOST_DEPTH)) {
-        pending_buffer_list[i].next = NULL;
-      } else {
-        pending_buffer_list[i].next = &pending_buffer_list[i+1];
+    // init recv queue linked list
+    {
+      int i;
+      YMPID_Pending_buffer *free_pool = (YMPID_Pending_buffer*)  malloc((YMPI_PREPOST_DEPTH) * sizeof(YMPID_Pending_buffer));
+      YMPID_Pending_buffer_list *pending_recv_queue  = (YMPID_Pending_buffer_list*) malloc(nprocs * sizeof(YMPID_Pending_buffer_list));
+      NZ(free_pool); memset(free_pool, 0, (YMPI_PREPOST_DEPTH) * sizeof(YMPID_Pending_buffer));
+      NZ(pending_recv_queue); memset(pending_recv_queue, 0, nprocs * sizeof(YMPID_Pending_buffer_list));
+      for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
+        if(i == (YMPI_PREPOST_DEPTH-1)) {
+          free_pool[i].next = NULL;
+        } else {
+          free_pool[i].next = &free_pool[i+1];
+        }
       }
-    }
 
-    ctx->rx_win.pending_buffer_list = pending_buffer_list;
-    ctx->rx_win.pending_index       = pending_index;
+      ctx->rx_win.pending_free_list.free_pool = free_pool;
+      ctx->rx_win.pending_free_list.head      = &free_pool[0];
+      ctx->rx_win.pending_free_list.tail      = &free_pool[YMPI_PREPOST_DEPTH-1];
+      ctx->rx_win.pending_recv_queue          = pending_recv_queue;
+    }
   }
 
   // create qp_list & qp_rank
@@ -697,8 +716,8 @@ int YMPI_Zflush() {
   struct ibv_wc wc[64];
   char* rx_buf = ctx->rx_win.buffer.buf;
   
-  YMPID_Pending_buffer  *pending_buffer_list = ctx->rx_win.pending_buffer_list;
-  YMPID_Pending_buffer **pending_index       = ctx->rx_win.pending_index;
+  YMPID_Pending_buffer_list* pending_free_list  = &ctx->rx_win.pending_free_list;
+  YMPID_Pending_buffer_list* pending_recv_queue = ctx->rx_win.pending_recv_queue;
 
   // wait for incoming completions
   int num_recv = 0;
@@ -744,12 +763,11 @@ int YMPI_Zflush() {
             assert(len >= 0);
 
             int msg_src = YMPID_Qpn_rank(wc[i].qp_num);
-            YMPID_Pending_buffer* pb = YMPID_Pending_buffer_fetch(pending_buffer_list);
-            pb->buf = &rx_buf[rb_id * YMPI_VBUF_BYTES];
-            pb->len = wc[i].byte_len;
+            YMPID_Pending_buffer* pb = YMPID_Pending_buffer_fetch(pending_free_list);
+            pb->buf  = &rx_buf[rb_id * YMPI_VBUF_BYTES];
+            pb->len  = wc[i].byte_len;
             pb->next = NULL;
-            YMPID_Pending_buffer_insert(pending_index[msg_src], pb);
-
+            YMPID_Pending_buffer_insert(&pending_recv_queue[msg_src], pb);
             break;
           }
         }
@@ -764,17 +782,17 @@ int YMPI_Zrecv(void** recv_buffer_ptr, uint64_t* recv_buffer_len_ptr, int source
   struct ibv_wc wc[64];
   char* rx_buf = ctx->rx_win.buffer.buf;
   
-  YMPID_Pending_buffer  *pending_buffer_list = ctx->rx_win.pending_buffer_list;
-  YMPID_Pending_buffer **pending_index       = ctx->rx_win.pending_index;
+  YMPID_Pending_buffer_list* pending_free_list  = &ctx->rx_win.pending_free_list;
+  YMPID_Pending_buffer_list* pending_recv_queue = ctx->rx_win.pending_recv_queue;
 
   // if exists in pending buffer
   {
-    YMPID_Pending_buffer* pb = YMPID_Pending_buffer_fetch(pending_index[source]);
+    YMPID_Pending_buffer* pb = YMPID_Pending_buffer_fetch(&pending_recv_queue[source]);
     if(pb != NULL) {
       ctx->rx_win.num_acknowledged++;
       (*recv_buffer_ptr) = pb->buf;
       (*recv_buffer_len_ptr) = pb->len;
-      YMPID_Pending_buffer_insert(pending_buffer_list, pb);
+      YMPID_Pending_buffer_insert(pending_free_list, pb);
       return 0;
     }
   }
@@ -804,6 +822,7 @@ int YMPI_Zrecv(void** recv_buffer_ptr, uint64_t* recv_buffer_len_ptr, int source
           case SEND_WRID:
           {
             ctx->pending_send_wr--;
+            // LOGD("send completion [pending=%d]\n", ctx->pending_send_wr);
             assert(ctx->pending_send_wr>=0);
             break;
           }
@@ -814,6 +833,7 @@ int YMPI_Zrecv(void** recv_buffer_ptr, uint64_t* recv_buffer_len_ptr, int source
             int idx  = ctx->rx_win.idx;
             int len  = ctx->rx_win.len;
             int dist = (rb_id + YMPI_PREPOST_DEPTH - idx) % YMPI_PREPOST_DEPTH;
+            // LOGD("recv completion (%d/%d) [id=%d, idx=%d, len=%d, next_idx=%d, next_len=%d]\n", rcnt, num_recv, rb_id, idx, len, (rb_id + 1) % YMPI_PREPOST_DEPTH, len - dist - 1);
             if(dist < len) {
               // wr lies in recv window
               num_recv += (dist + 1);
@@ -822,19 +842,21 @@ int YMPI_Zrecv(void** recv_buffer_ptr, uint64_t* recv_buffer_len_ptr, int source
             }
             rcnt++;
             assert(len >= 0);
+            ctx->rx_win.idx = idx;
+            ctx->rx_win.len = len;
 
             int msg_src = YMPID_Qpn_rank(wc[i].qp_num);
-            if(msg_src == source) {
+            if(msg_src == source && (!done)) {
               ctx->rx_win.num_acknowledged++;
               (*recv_buffer_ptr) = &rx_buf[rb_id * YMPI_VBUF_BYTES];
               (*recv_buffer_len_ptr) = wc[i].byte_len;
               done = 1;
             } else {
-              YMPID_Pending_buffer* pb = YMPID_Pending_buffer_fetch(pending_buffer_list);
-              pb->buf = &rx_buf[rb_id * YMPI_VBUF_BYTES];
-              pb->len = wc[i].byte_len;
+              YMPID_Pending_buffer* pb = YMPID_Pending_buffer_fetch(pending_free_list);
+              pb->buf  = &rx_buf[rb_id * YMPI_VBUF_BYTES];
+              pb->len  = wc[i].byte_len;
               pb->next = NULL;
-              YMPID_Pending_buffer_insert(pending_index[msg_src], pb);
+              YMPID_Pending_buffer_insert(&pending_recv_queue[msg_src], pb);
             }
             break;
           }
