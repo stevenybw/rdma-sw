@@ -761,6 +761,8 @@ int YMPI_Zflush() {
             }
             rcnt++;
             assert(len >= 0);
+            ctx->rx_win.idx = idx;
+            ctx->rx_win.len = len;
 
             int msg_src = YMPID_Qpn_rank(wc[i].qp_num);
             YMPID_Pending_buffer* pb = YMPID_Pending_buffer_fetch(pending_free_list);

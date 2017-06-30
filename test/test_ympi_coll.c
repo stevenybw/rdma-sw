@@ -31,9 +31,9 @@ int main(void) {
       assert(sb != NULL);
       for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
         sb[i] = rank * YMPI_PREPOST_DEPTH + i;
-        YMPI_Post_send(send_buffer, i * sizeof(uint64_t), sizeof(uint64_t), 0);
+        YMPI_Zsend(send_buffer, i * sizeof(uint64_t), sizeof(uint64_t), 0);
       }
-      YMPI_Expect(YMPI_PREPOST_DEPTH, 0, NULL, NULL);
+      YMPI_Zflush();
       YMPI_Dealloc(&send_buffer);
     } else {
       int count[MAX_NP];
@@ -43,17 +43,19 @@ int main(void) {
       memset(recv_buffers, 0, sizeof(recv_buffers));
       memset(recv_buffers_len, 0, sizeof(recv_buffers_len));
       int k;
-      for(k=0; k<(nprocs-1); k++) {
-        YMPI_Expect(0, YMPI_PREPOST_DEPTH, recv_buffers, recv_buffers_len);
-        for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
-          assert(recv_buffers_len[i] == sizeof(uint64_t));
-          uint64_t elem = *(recv_buffers[i]);
-          int src = elem / YMPI_PREPOST_DEPTH;
-          int id  = elem % YMPI_PREPOST_DEPTH;
-          assert(count[src] == id);
-          count[src]++;
+      for(k=0; k<nprocs; k++) {
+        if(k != rank) {
+          for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
+            YMPI_Zrecv(&recv_buffers[i], &recv_buffers_len[i], k);
+            assert(recv_buffers_len[i] == sizeof(uint64_t));
+            uint64_t elem = *(recv_buffers[i]);
+            int src = elem / YMPI_PREPOST_DEPTH;
+            int id  = elem % YMPI_PREPOST_DEPTH;
+            assert(count[src] == id);
+            count[src]++;
+          }
+          YMPI_Return();
         }
-        YMPI_Return();
       }
       for(k=0; k<nprocs; k++) {
         if(k != rank) {
