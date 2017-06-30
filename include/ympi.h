@@ -5,7 +5,7 @@
 
 #define YMPI_PAGE_SIZE        (1024*1024)
 #define YMPI_VBUF_BYTES       (256*1024)
-#define YMPI_PREPOST_DEPTH    (32)  
+#define YMPI_PREPOST_DEPTH    (256)  
 #define YMPI_QPN_HASH_SIZE    (1024*1024)
 
 typedef uint64_t YMPI_Rdma_buffer;
