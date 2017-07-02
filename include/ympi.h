@@ -8,6 +8,9 @@
 #define YMPI_PREPOST_DEPTH    (256)  
 #define YMPI_QPN_HASH_SIZE    (1024*1024)
 
+#define YMPI_SW               (1)
+#define YMPI_SW_DIY           (YMPI_SW)
+
 typedef uint64_t YMPI_Rdma_buffer;
 typedef uint64_t uintptr_t;
 

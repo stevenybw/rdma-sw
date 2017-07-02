@@ -24,7 +24,7 @@ int main(void) {
       YMPI_Rdma_buffer send_buffer;
       uint64_t* sb = NULL;
       uintptr_t sb_ptr = 0;
-      YMPI_Alloc(&send_buffer, 1024);
+      YMPI_Alloc(&send_buffer, YMPI_PREPOST_DEPTH * sizeof(int64_t));
       YMPI_Get_buffer(send_buffer, &sb_ptr);
       sb = (uint64_t*) sb_ptr;
       assert(sb != NULL);
@@ -63,7 +63,7 @@ int main(void) {
       YMPI_Rdma_buffer send_buffer;
       uint64_t* sb = NULL;
       uintptr_t sb_ptr = 0;
-      YMPI_Alloc(&send_buffer, 1024);
+      YMPI_Alloc(&send_buffer, YMPI_PREPOST_DEPTH * sizeof(int64_t));
       YMPI_Get_buffer(send_buffer, &sb_ptr);
       sb = (uint64_t*) sb_ptr;
       assert(sb != NULL);
@@ -106,7 +106,7 @@ int main(void) {
       YMPI_Rdma_buffer send_buffer;
       uint64_t* sb = NULL;
       uintptr_t sb_ptr = 0;
-      YMPI_Alloc(&send_buffer, 1024);
+      YMPI_Alloc(&send_buffer, YMPI_PREPOST_DEPTH * sizeof(int64_t));
       YMPI_Get_buffer(send_buffer, &sb_ptr);
       sb = (uint64_t*) sb_ptr;
       assert(sb != NULL);

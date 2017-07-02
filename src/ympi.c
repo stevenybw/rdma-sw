@@ -99,15 +99,39 @@ typedef struct YMPID_Context {
   int      nprocs;
   int      pending_send_wr;
   uint32_t max_inline_data;
+
+#if YMPI_SW
+  int      cgid;
+#endif
 } YMPID_Context;
 
 static YMPID_Context *ctx;
+
+#if YMPI_SW
+
+extern long sys_m_cgid();
+
+static inline int offset_to_qpn(int cgid, int nprocs, int offset) {
+  return 1024 + cgid*((8*1024*1024)-1024)/4 + nprocs + offset;
+}
+
+static inline int qpn_to_offset(int cgid, int nprocs, int qpn) {
+  return qpn - 1024 - cgid*((8*1024*1024)-1024)/4 - nprocs;
+}
+
+static inline int YMPID_Qpn_rank(int qpn) {
+  return qpn_to_offset(ctx->cgid, ctx->nprocs, qpn);
+}
+
+#else
 
 static inline int YMPID_Qpn_rank(int qpn) {
   int rank = ctx->qp_rank[qpn % YMPI_QPN_HASH_SIZE];
   assert(rank >= 0);
   return rank;
 }
+
+#endif //YMPI_SW
 
 static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_port, int rank, int nprocs)
 {
@@ -119,6 +143,12 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
   ctx->rank        = rank;
   ctx->nprocs      = nprocs;
   ctx->pending_send_wr = 0;
+
+#if YMPI_SW
+  int cgid         = sys_m_cgid();
+  assert(cgid < 4);
+  ctx->cgid        = cgid;
+#endif
 
   ctx->context = ibv_open_device(ib_dev);
   if (!ctx->context) {
@@ -228,7 +258,16 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
         },
         .qp_type = IBV_QPT_RC
       };
-      qp = ibv_create_qp(ctx->pd, &init_attr);
+#if YMPI_SW_DIY
+      {
+        qp = ibv_create_qp_diy(ctx->pd, &init_attr, offset_to_qpn(cgid, nprocs, i));
+        // LOGD("    creating QP[%d] with qpn=%d\n", i, offset_to_qpn(cgid, nprocs, i));
+      }
+#else
+      {
+        qp = ibv_create_qp(ctx->pd, &init_attr);
+      }
+#endif
       if (!qp)  {
         fprintf(stderr, "Couldn't create QP[%d], errno=%d[%s]\n", i, errno, strerror(errno));
         goto clean_qp_list;
