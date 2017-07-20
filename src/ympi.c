@@ -111,6 +111,7 @@ static YMPID_Context *ctx;
 
 extern long sys_m_cgid();
 
+/*
 static inline int offset_to_qpn(int cgid, int nprocs, int offset) {
   return 1024 + cgid*((8*1024*1024)-1024)/4 + nprocs + offset;
 }
@@ -118,6 +119,20 @@ static inline int offset_to_qpn(int cgid, int nprocs, int offset) {
 static inline int qpn_to_offset(int cgid, int nprocs, int qpn) {
   return qpn - 1024 - cgid*((8*1024*1024)-1024)/4 - nprocs;
 }
+*/
+
+static inline int offset_to_qpn(int cgid, int nprocs, int offset) {
+  int qpn_block_size = ((8*1024*1024)-1024)/4;
+  int half_qpn_block_size = ((8*1024*1024)-1024)/8;
+  return 1024 + cgid*qpn_block_size + half_qpn_block_size + offset;
+}
+
+static inline int qpn_to_offset(int cgid, int nprocs, int qpn) {
+  int qpn_block_size = ((8*1024*1024)-1024)/4;
+  int half_qpn_block_size = ((8*1024*1024)-1024)/8;
+  return qpn - 1024 - cgid*qpn_block_size - half_qpn_block_size;
+}
+
 
 static inline int YMPID_Qpn_rank(int qpn) {
   return qpn_to_offset(ctx->cgid, ctx->nprocs, qpn);
@@ -193,6 +208,8 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
 
   // create rx_win
   {
+    MPI_Barrier(MPI_COMM_WORLD);
+    LOGDS("    creating RX_WIN\n");
     int access_flags = IBV_ACCESS_LOCAL_WRITE;
     void           *buf = NULL;
     struct ibv_mr  *mr  = NULL;
@@ -236,6 +253,7 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
 
   // create qp_list & qp_rank
   {
+    MPI_Barrier(MPI_COMM_WORLD);
     LOGDS("    creating QP\n");
     int i;
     struct ibv_qp** qp_list = (struct ibv_qp**) malloc(nprocs * sizeof(uintptr_t)); NZ(qp_list);
@@ -253,7 +271,11 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
         .recv_cq = ctx->cq,
         .srq     = ctx->srq,
         .cap     = {
-          .max_send_wr  = 1024,
+          /*
+           * CAUTION: max_send_wr = 1024, nprocs = 1024 can pass, but when nprocs = 4096,
+           * in TaihuLight, nodes will DOWN!!
+           */
+          .max_send_wr  = 256,
           .max_send_sge = 1,
         },
         .qp_type = IBV_QPT_RC
@@ -279,6 +301,7 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
       qp_rank[qp->qp_num % YMPI_QPN_HASH_SIZE] = i;
     }
 
+    MPI_Barrier(MPI_COMM_WORLD);
     LOGDS("    setting QP to INIT\n");
     for(i=0; i<nprocs; i++) {
       struct ibv_qp* qp = qp_list[i];
@@ -569,6 +592,7 @@ int YMPI_Init(int *argc, char ***argv) {
 
   // initialize ctx
   {
+    MPI_Barrier(MPI_COMM_WORLD);
     LOGDS("  initialize\n");
     struct ibv_device       **dev_list;
     struct ibv_device       *ib_dev;
@@ -617,6 +641,7 @@ int YMPI_Init(int *argc, char ***argv) {
     ctx->recv_wr_list  = recv_wr_list;
   }
 
+  MPI_Barrier(MPI_COMM_WORLD);
   // pre-post receive requests
   {
     LOGDS("  post_receive\n");
@@ -635,6 +660,7 @@ int YMPI_Init(int *argc, char ***argv) {
     int *remote_lid_list = NULL;
     int *remote_psn_list = NULL;
     int *remote_qpn_list = NULL;
+    MPI_Barrier(MPI_COMM_WORLD);
     LOGDS("  exchange address\n");
     local_lid = ctx->portinfo.lid;
     if (!local_lid) {
@@ -656,6 +682,7 @@ int YMPI_Init(int *argc, char ***argv) {
     remote_qpn_list = (int*) malloc(nprocs * sizeof(int));
     NZ(remote_qpn_list);
 
+    MPI_Barrier(MPI_COMM_WORLD);
     LOGDS("    MPI_Alltoall qpn_list...\n");
     MPI_Alltoall(local_qpn_list, 1, MPI_INT, remote_qpn_list, 1, MPI_INT, MPI_COMM_WORLD);
     LOGDS("    MPI_Alltoall Complete\n");
@@ -668,8 +695,6 @@ int YMPI_Init(int *argc, char ***argv) {
     LOGDS("    MPI_Allgather lid_list...\n");
     MPI_Allgather(&local_lid, 1, MPI_INT, remote_lid_list, 1, MPI_INT, MPI_COMM_WORLD);
     LOGDS("    MPI_Allgather Complete\n");
-
-
 
     LOGDS("  establish connection\n");
     enum ibv_mtu mtu = IBV_MTU_2048;
@@ -965,4 +990,3 @@ int YMPI_Return() {
   YMPID_Recv_win_refill(ctx);
   return 0;
 }
-
