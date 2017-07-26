@@ -275,7 +275,7 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
            * CAUTION: max_send_wr = 1024, nprocs = 1024 can pass, but when nprocs = 4096,
            * in TaihuLight, nodes will DOWN!!
            */
-          .max_send_wr  = 256,
+          .max_send_wr  = 8,
           .max_send_sge = 1,
         },
         .qp_type = IBV_QPT_RC
