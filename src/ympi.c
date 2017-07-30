@@ -12,6 +12,7 @@
 
 #include "common.h"
 #include "ympi.h"
+#include "linkedlist.h"
 
 typedef struct YMPID_Rdma_buffer {
   void           *buf;
@@ -25,7 +26,7 @@ typedef struct YMPID_Vbuf {
   uint64_t                     bytes;
 } YMPID_Vbuf;
 
-#define YMPID_VBUF_ZERO ((YMPID_Vbuf){0,NULL,0})
+#define YMPID_VBUF_ZERO (YMPID_Vbuf){0,NULL,0}
 
 // type of element, type of list
 DECLARE_LINKED_LIST(YMPID_Vbuf, YMPID_VBUF_ZERO, YMPID_Vbuf_queue);
