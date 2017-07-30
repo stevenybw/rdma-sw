@@ -434,8 +434,8 @@ static int YMPID_Return() {
   };
   struct ibv_recv_wr *bad_wr = NULL;
 
-  int err = YMPID_Vbuf_queue_dequeue(vbuf_fetched, &curr);
-  while(err == 0) {
+  int ok = YMPID_Vbuf_queue_dequeue_inplace(vbuf_fetched, &curr);
+  while(ok == 0) {
     YMPID_Wrid wr_id = {
       .tagid = {
         .tag = RECV_WRID,
@@ -446,6 +446,7 @@ static int YMPID_Return() {
     wr.wr_id = wr_id.val;
 
     int err;
+    LOGV("ibv_post_srq_recv id=%d addr=%p lkey=%u\n", wr_id.tagid.id, curr.addr, sge.lkey);
     if((err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr))) {
       LOGD("ibv_post_srq_recv failed with %d, errno=%d [%s]\n", err, errno, strerror(errno));
       return err; 
@@ -454,7 +455,7 @@ static int YMPID_Return() {
       LOGD("post_srq_recv has bad_wr\n");
       return -1;
     }
-    err = YMPID_Vbuf_queue_dequeue(vbuf_fetched, &curr);
+    ok = YMPID_Vbuf_queue_dequeue_inplace(vbuf_fetched, &curr);
   }
 
   return 0;
@@ -761,9 +762,6 @@ int YMPI_Zflush() {
   YMPID_Vbuf       *vbuf_array = ctx->rx_win.vbuf_array;
   YMPID_Vbuf_queue *pending_recv_queue = ctx->rx_win.pending_recv_queue;
 
-  // wait for incoming completions
-  int num_recv = 0;
-
   while(ctx->pending_send_wr > 0) {
     ne = ibv_poll_cq(ctx->cq, 64, wc);
     if (ne < 0) {
@@ -814,7 +812,7 @@ int YMPI_Zrecv(void** recv_buffer_ptr, uint64_t* recv_buffer_len_ptr, int source
     // wait for incoming message
     YMPID_Vbuf v;
     {
-      int err = YMPID_Vbuf_queue_dequeue(&pending_recv_queue[source], &v);
+      int err = YMPID_Vbuf_queue_dequeue_inplace(&pending_recv_queue[source], &v);
       if(err == 0) {
         (*recv_buffer_ptr) = v.addr;
         (*recv_buffer_len_ptr) = v.bytes;

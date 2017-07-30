@@ -25,8 +25,8 @@ src/ympi.o: src/ympi.c include/ympi.h include/common.h
 test/benchmark_ympi: test/benchmark_ympi.c src/ympi.c include/ympi.h include/common.h
 	mpicc $(CFLAGS) -o test/benchmark_ympi -I/usr/sw-mpp/include -Iinclude test/benchmark_ympi.c src/ympi.c
 
-test/test_linkedlist: test/test_linkedlist.c src/linkedlist.h
-	gcc -g -o test/test_linkedlist -I./src test/test_linkedlist.c
+test/test_linkedlist: test/test_linkedlist.c include/linkedlist.h
+	gcc -g -o test/test_linkedlist -Iinclude test/test_linkedlist.c
 
 test/test_ympi: test/test_ympi.c src/ympi.c include/ympi.h include/common.h
 	mpicc $(CFLAGS) -o test/test_ympi -I/usr/sw-mpp/include -Iinclude test/test_ympi.c src/ympi.c
