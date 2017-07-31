@@ -16,27 +16,17 @@
 
 typedef struct YMPID_Rdma_buffer {
   void           *buf;
+  size_t         *buf_bytes;
   size_t          bytes;
   struct ibv_mr  *mr;
 } YMPID_Rdma_buffer;
 
-typedef struct YMPID_Vbuf {
-  int                          id;
-  void                        *addr;
-  uint64_t                     bytes;
-} YMPID_Vbuf;
-
-#define YMPID_VBUF_ZERO (YMPID_Vbuf){0,NULL,0}
-
 // type of element, type of list
-DECLARE_LINKED_LIST(YMPID_Vbuf, YMPID_VBUF_ZERO, YMPID_Vbuf_queue);
+DECLARE_LINKED_LIST(YMPID_Vbuf, -1, int);
 
 typedef struct YMPID_Recv_win {
   /* buffer: the memory region */
   YMPID_Rdma_buffer          buffer;
-
-  /* vbuf_array: index from wr_id to the buffer */
-  YMPID_Vbuf                 vbuf_array[YMPI_PREPOST_DEPTH];
 
   /* pending_recv_queue: an array of linked list that stores pending recv for each process */
   YMPID_Vbuf_queue          *pending_recv_queue;
@@ -193,13 +183,17 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
     LOGDS("    creating RX_WIN\n");
     int access_flags = IBV_ACCESS_LOCAL_WRITE;
     void           *buf = NULL;
+    void           *buf_bytes = NULL;
     struct ibv_mr  *mr  = NULL;
 
     size_t bytes = YMPI_PREPOST_DEPTH * YMPI_VBUF_BYTES;
     ctx->rx_win.buffer.bytes = bytes;
     buf              = memalign(YMPI_PAGE_SIZE, bytes);  NZ(buf);
     memset(buf, 0x7b, bytes);
-    ctx->rx_win.buffer.buf   = buf;
+    buf_bytes        = memalign(YMPI_PAGE_SIZE, YMPI_PREPOST_DEPTH * sizeof(size_t)); NZ(buf_bytes);
+    memset(buf_bytes, 0, YMPI_PREPOST_DEPTH * sizeof(size_t));
+    ctx->rx_win.buffer.buf       = buf;
+    ctx->rx_win.buffer.buf_bytes = buf_bytes;
     mr = ibv_reg_mr(ctx->pd, buf, bytes, access_flags);
     ctx->rx_win.buffer.mr    = mr;
 
@@ -210,11 +204,6 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
 
     {
       int i;
-      for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
-        ctx->rx_win.vbuf_array[i].id  = i;
-        ctx->rx_win.vbuf_array[i].addr = &((char*)buf)[i*YMPI_VBUF_BYTES];
-        ctx->rx_win.vbuf_array[i].bytes = YMPI_VBUF_BYTES;
-      }
 
       YMPID_Vbuf_queue *pending_recv_queue  = (YMPID_Vbuf_queue*) malloc(nprocs * sizeof(YMPID_Vbuf_queue));
       for(i=0; i<nprocs; i++) {
@@ -223,7 +212,7 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
       ctx->rx_win.pending_recv_queue = pending_recv_queue;
       YMPID_Vbuf_queue_init(&ctx->rx_win.vbuf_fetched, YMPI_PREPOST_DEPTH);
       for(i=0; i<YMPI_PREPOST_DEPTH; i++) {
-        YMPID_Vbuf_queue_enqueue(&ctx->rx_win.vbuf_fetched, ctx->rx_win.vbuf_array[i]);
+        YMPID_Vbuf_queue_enqueue(&ctx->rx_win.vbuf_fetched, i);
       }
     }
   }
@@ -418,8 +407,8 @@ static inline int YMPID_Recv_win_recv() {
 
 static int YMPID_Return() {
   YMPID_Vbuf_queue* vbuf_fetched = &ctx->rx_win.vbuf_fetched;
-  YMPID_Vbuf curr;
-
+  char *buf                      = (char*) ctx->rx_win.buffer.buf;
+  
   struct ibv_sge sge = {
     .addr   = 0,
     .length = YMPI_VBUF_BYTES,
@@ -434,19 +423,19 @@ static int YMPID_Return() {
   };
   struct ibv_recv_wr *bad_wr = NULL;
 
-  int ok = YMPID_Vbuf_queue_dequeue_inplace(vbuf_fetched, &curr);
-  while(ok == 0) {
+  int buf_id = YMPID_Vbuf_queue_dequeue(vbuf_fetched);
+  while(buf_id != -1) {
     YMPID_Wrid wr_id = {
       .tagid = {
         .tag = RECV_WRID,
-        .id  = curr.id
+        .id  = buf_id
       }
     };
-    sge.addr = curr.addr;
+    sge.addr = &buf[buf_id * YMPI_VBUF_SIZE];
     wr.wr_id = wr_id.val;
 
     int err;
-    LOGV("ibv_post_srq_recv id=%d addr=%p lkey=%u\n", wr_id.tagid.id, curr.addr, sge.lkey);
+    LOGV("ibv_post_srq_recv id=%d addr=%p lkey=%u ok=%d\n", wr_id.tagid.id, curr.addr, sge.lkey, ok);
     if((err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr))) {
       LOGD("ibv_post_srq_recv failed with %d, errno=%d [%s]\n", err, errno, strerror(errno));
       return err; 
@@ -455,7 +444,7 @@ static int YMPID_Return() {
       LOGD("post_srq_recv has bad_wr\n");
       return -1;
     }
-    ok = YMPID_Vbuf_queue_dequeue_inplace(vbuf_fetched, &curr);
+    buf_id = YMPID_Vbuf_queue_dequeue(vbuf_fetched);
   }
 
   return 0;
@@ -759,7 +748,8 @@ int YMPI_Zsend(YMPI_Rdma_buffer buffer, size_t offset, size_t bytes, int dest) {
 int YMPI_Zflush() {
   int ne = 0;
   struct ibv_wc wc[64];
-  YMPID_Vbuf       *vbuf_array = ctx->rx_win.vbuf_array;
+    
+  size_t* buf_bytes = ctx->rx_win.buffer.buf_bytes;
   YMPID_Vbuf_queue *pending_recv_queue = ctx->rx_win.pending_recv_queue;
 
   while(ctx->pending_send_wr > 0) {
@@ -790,7 +780,8 @@ int YMPI_Zflush() {
           {
             int rb_id = wr_id.tagid.id;
             int msg_src = YMPID_Qpn_rank(wc[i].qp_num);
-            YMPID_Vbuf_queue_enqueue(&pending_recv_queue[msg_src], vbuf_array[rb_id]);
+            buf_bytes[rb_id] = wc[i].byte_len;
+            YMPID_Vbuf_queue_enqueue(&pending_recv_queue[msg_src], rb_id);
             break;
           }
         }
@@ -804,19 +795,19 @@ int YMPI_Zrecv(void** recv_buffer_ptr, uint64_t* recv_buffer_len_ptr, int source
   int ne = 0;
   struct ibv_wc wc[64];
 
-  YMPID_Vbuf       *vbuf_array = ctx->rx_win.vbuf_array;
+  char* buf = ctx->rx_win.buffer.buf;
+  size_t* buf_bytes = ctx->rx_win.buffer.buf_bytes;
   YMPID_Vbuf_queue *pending_recv_queue = ctx->rx_win.pending_recv_queue;
   YMPID_Vbuf_queue *vbuf_fetched = &ctx->rx_win.vbuf_fetched;
 
   while(1) {
     // wait for incoming message
-    YMPID_Vbuf v;
     {
-      int err = YMPID_Vbuf_queue_dequeue_inplace(&pending_recv_queue[source], &v);
-      if(err == 0) {
-        (*recv_buffer_ptr) = v.addr;
-        (*recv_buffer_len_ptr) = v.bytes;
-        YMPID_Vbuf_queue_enqueue(vbuf_fetched, v);
+      int buf_id = YMPID_Vbuf_queue_dequeue(&pending_recv_queue[source]);
+      if(buf_id != -1) {
+        (*recv_buffer_ptr) = &buf[buf_id * YMPI_VBUF_SIZE];
+        (*recv_buffer_len_ptr) = buf_bytes[buf_id];
+        YMPID_Vbuf_queue_enqueue(vbuf_fetched, buf_id);
         break;
       }
     }
@@ -848,7 +839,8 @@ int YMPI_Zrecv(void** recv_buffer_ptr, uint64_t* recv_buffer_len_ptr, int source
           {
             int rb_id = wr_id.tagid.id;
             int msg_src = YMPID_Qpn_rank(wc[i].qp_num);
-            YMPID_Vbuf_queue_enqueue(&pending_recv_queue[msg_src], vbuf_array[rb_id]);
+            buf_bytes[rb_id] = wc[i].byte_len;
+            YMPID_Vbuf_queue_enqueue(&pending_recv_queue[msg_src], rb_id);
             break;
           }
         }

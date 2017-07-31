@@ -42,8 +42,8 @@ static inline void QUEUE_NAME ## _init(QUEUE_NAME* q, int pool_size)            
   /* first elem as sentinel */                                                                     \
   q->freelist.list[0].elem           = ZERO_VALUE;                                                 \
   q->freelist.list[0].next           = NULL;                                                       \
-  q->freelist.list[pool_size].elem   = ZERO_VALUE;                                                 \
-  q->freelist.list[pool_size].next   = NULL;                                                       \
+  q->freelist.list[pool_size-1].elem = ZERO_VALUE;                                                 \
+  q->freelist.list[pool_size-1].next = NULL;                                                       \
   q->freelist.head                   = &q->freelist.list[1];                                       \
   q->freelist.tail                   = &q->freelist.list[pool_size-1];                             \
   q->head                            = &q->freelist.list[0];                                       \
