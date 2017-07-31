@@ -557,10 +557,6 @@ int YMPI_Get_buffer(YMPI_Rdma_buffer buffer, uintptr_t* buf) {
 int YMPID_Init(int *argc, char ***argv, int* target_rank_list) {
   int rank, nprocs;
   int ib_port = 1;
-  
-  if(MPI_SUCCESS != MPI_Init(argc, argv)) {
-    return -1;
-  }
 
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
@@ -691,10 +687,6 @@ int YMPID_Init(int *argc, char ***argv, int* target_rank_list) {
 int YMPI_Finalize() {
   YMPID_Context_destroy(ctx);
   ctx = NULL;
-
-  if(MPI_SUCCESS != MPI_Finalize()) {
-    return -1;
-  }
 
   return 0;
 }
