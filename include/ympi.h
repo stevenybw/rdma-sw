@@ -18,6 +18,8 @@ typedef uint64_t YMPI_Rdma_buffer;
 typedef uint64_t uintptr_t;
 
 int YMPI_Init(int *argc, char ***argv);
+int YMPI_Init_ranklist(int *argc, char ***argv, int* target_rank_list);
+
 int YMPI_Finalize();
 
 int YMPI_Alloc(YMPI_Rdma_buffer *buffer, size_t bytes);

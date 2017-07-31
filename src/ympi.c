@@ -230,61 +230,67 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
 
     // create qp
     for(i=0; i<nprocs; i++) {
-      struct ibv_qp* qp = NULL;
-      struct ibv_qp_attr attr;
-      struct ibv_qp_init_attr init_attr = {
-        .send_cq = ctx->cq,
-        .recv_cq = ctx->cq,
-        .srq     = ctx->srq,
-        .cap     = {
-          /*
-           * CAUTION: max_send_wr = 1024, nprocs = 1024 can pass, but when nprocs = 4096,
-           * in TaihuLight, nodes will DOWN!!
-           */
-          .max_send_wr  = 8,
-          .max_send_sge = 1,
-        },
-        .qp_type = IBV_QPT_RC
-      };
-#if YMPI_SW_DIY
-      {
-        qp = ibv_create_qp_diy(ctx->pd, &init_attr, offset_to_qpn(cgid, nprocs, i));
-        // LOGD("    creating QP[%d] with qpn=%d\n", i, offset_to_qpn(cgid, nprocs, i));
+      if(!target_rank_list || target_rank_list[i]) {
+        struct ibv_qp* qp = NULL;
+        struct ibv_qp_attr attr;
+        struct ibv_qp_init_attr init_attr = {
+          .send_cq = ctx->cq,
+          .recv_cq = ctx->cq,
+          .srq     = ctx->srq,
+          .cap     = {
+            /*
+             * CAUTION: max_send_wr = 1024, nprocs = 1024 can pass, but when nprocs = 4096,
+             * in TaihuLight, nodes will DOWN!!
+             */
+            .max_send_wr  = 8,
+            .max_send_sge = 1,
+          },
+          .qp_type = IBV_QPT_RC
+        };
+  #if YMPI_SW_DIY
+        {
+          qp = ibv_create_qp_diy(ctx->pd, &init_attr, offset_to_qpn(cgid, nprocs, i));
+          // LOGD("    creating QP[%d] with qpn=%d\n", i, offset_to_qpn(cgid, nprocs, i));
+        }
+  #else
+        {
+          qp = ibv_create_qp(ctx->pd, &init_attr);
+        }
+  #endif
+        if (!qp)  {
+          fprintf(stderr, "Couldn't create QP[%d], errno=%d[%s]\n", i, errno, strerror(errno));
+          goto clean_qp_list;
+        }
+        ibv_query_qp(qp, &attr, IBV_QP_CAP, &init_attr);
+        ctx->max_inline_data = init_attr.cap.max_inline_data;
+        qp_list[i] = qp;
+        assert(qp_rank[qp->qp_num % YMPI_QPN_HASH_SIZE] == -1);
+        qp_rank[qp->qp_num % YMPI_QPN_HASH_SIZE] = i;
+      } else {
+        qp_list[i] = NULL;
       }
-#else
-      {
-        qp = ibv_create_qp(ctx->pd, &init_attr);
-      }
-#endif
-      if (!qp)  {
-        fprintf(stderr, "Couldn't create QP[%d], errno=%d[%s]\n", i, errno, strerror(errno));
-        goto clean_qp_list;
-      }
-      ibv_query_qp(qp, &attr, IBV_QP_CAP, &init_attr);
-      ctx->max_inline_data = init_attr.cap.max_inline_data;
-      qp_list[i] = qp;
-      assert(qp_rank[qp->qp_num % YMPI_QPN_HASH_SIZE] == -1);
-      qp_rank[qp->qp_num % YMPI_QPN_HASH_SIZE] = i;
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
     LOGDS("    setting QP to INIT\n");
     for(i=0; i<nprocs; i++) {
-      struct ibv_qp* qp = qp_list[i];
-      struct ibv_qp_attr attr = {
-        .qp_state        = IBV_QPS_INIT,
-        .pkey_index      = 0,
-        .port_num        = ib_port,
-        .qp_access_flags = 0
-      };
+      if(qp_list[i]) {
+        struct ibv_qp* qp = qp_list[i];
+        struct ibv_qp_attr attr = {
+          .qp_state        = IBV_QPS_INIT,
+          .pkey_index      = 0,
+          .port_num        = ib_port,
+          .qp_access_flags = 0
+        };
 
-      if (ibv_modify_qp(qp, &attr,
-            IBV_QP_STATE              |
-            IBV_QP_PKEY_INDEX         |
-            IBV_QP_PORT               |
-            IBV_QP_ACCESS_FLAGS)) {
-        fprintf(stderr, "Failed to modify QP[%d] to INIT\n", i);
-        goto clean_qp;
+        if (ibv_modify_qp(qp, &attr,
+              IBV_QP_STATE              |
+              IBV_QP_PKEY_INDEX         |
+              IBV_QP_PORT               |
+              IBV_QP_ACCESS_FLAGS)) {
+          fprintf(stderr, "Failed to modify QP[%d] to INIT\n", i);
+          goto clean_qp;
+        }
       }
     }
   }
@@ -295,7 +301,7 @@ clean_qp:
 {
   int i;
   for(i=0; i<nprocs; i++) {
-    if(ibv_destroy_qp(ctx->qp_list[i])) {
+    if(ctx->qp_list[i] && ibv_destroy_qp(ctx->qp_list[i])) {
       LOGD("Couldn't destroy QP[%d]\n", i);
     }
     ctx->qp_list[i] = NULL;
@@ -342,7 +348,7 @@ clean_qp:
 {
   int i;
   for(i=0; i<nprocs; i++) {
-    if(ibv_destroy_qp(ctx->qp_list[i])) {
+    if(ctx->qp_list[i] && ibv_destroy_qp(ctx->qp_list[i])) {
       LOGD("Couldn't destroy QP[%d]\n", i);
     }
     ctx->qp_list[i] = NULL;
@@ -460,55 +466,57 @@ static int YMPID_Context_connect(YMPID_Context *ctx, enum ibv_mtu mtu,
   int nprocs = ctx->nprocs;
 
   for(i=0; i<nprocs; i++) {
-    struct ibv_qp* qp         = ctx->qp_list[i];
-    int            local_psn  = local_psn_list[i];
-    int            remote_lid = remote_lid_list[i];
-    int            remote_psn = remote_psn_list[i];
-    int            remote_qpn = remote_qpn_list[i];
+    if(ctx->qp_list[i]) {
+      struct ibv_qp* qp         = ctx->qp_list[i];
+      int            local_psn  = local_psn_list[i];
+      int            remote_lid = remote_lid_list[i];
+      int            remote_psn = remote_psn_list[i];
+      int            remote_qpn = remote_qpn_list[i];
 
-    struct ibv_qp_attr attr = {
-      .qp_state   = IBV_QPS_RTR,
-      .path_mtu   = mtu,
-      .dest_qp_num    = remote_qpn,
-      .rq_psn     = remote_psn,
-      .max_dest_rd_atomic = 1,
-      .min_rnr_timer    = 12,
-      .ah_attr    = {
-        .is_global  = 0,
-        .dlid   = remote_lid,
-        .sl   = sl,
-        .src_path_bits  = 0,
-        .port_num = port
+      struct ibv_qp_attr attr = {
+        .qp_state   = IBV_QPS_RTR,
+        .path_mtu   = mtu,
+        .dest_qp_num   = remote_qpn,
+        .rq_psn     = remote_psn,
+        .max_dest_rd_atomic = 1,
+        .min_rnr_timer    = 12,
+        .ah_attr    = {
+          .is_global  = 0,
+          .dlid   = remote_lid,
+          .sl   = sl,
+          .src_path_bits  = 0,
+          .port_num = port
+        }
+      };
+
+      if (ibv_modify_qp(qp, &attr,
+            IBV_QP_STATE              |
+            IBV_QP_AV                 |
+            IBV_QP_PATH_MTU           |
+            IBV_QP_DEST_QPN           |
+            IBV_QP_RQ_PSN             |
+            IBV_QP_MAX_DEST_RD_ATOMIC |
+            IBV_QP_MIN_RNR_TIMER)) {
+        fprintf(stderr, "Failed to modify QP[%d] to RTR\n", i);
+        return 1;
       }
-    };
 
-    if (ibv_modify_qp(qp, &attr,
-          IBV_QP_STATE              |
-          IBV_QP_AV                 |
-          IBV_QP_PATH_MTU           |
-          IBV_QP_DEST_QPN           |
-          IBV_QP_RQ_PSN             |
-          IBV_QP_MAX_DEST_RD_ATOMIC |
-          IBV_QP_MIN_RNR_TIMER)) {
-      fprintf(stderr, "Failed to modify QP[%d] to RTR\n", i);
-      return 1;
-    }
-
-    attr.qp_state     = IBV_QPS_RTS;
-    attr.timeout      = 14;
-    attr.retry_cnt      = 7;
-    attr.rnr_retry      = 7;
-    attr.sq_psn     = local_psn;
-    attr.max_rd_atomic  = 1;
-    if (ibv_modify_qp(qp, &attr,
-          IBV_QP_STATE              |
-          IBV_QP_TIMEOUT            |
-          IBV_QP_RETRY_CNT          |
-          IBV_QP_RNR_RETRY          |
-          IBV_QP_SQ_PSN             |
-          IBV_QP_MAX_QP_RD_ATOMIC)) {
-      fprintf(stderr, "Failed to modify QP[%d] to RTS\n", i);
-      return 1;
+      attr.qp_state     = IBV_QPS_RTS;
+      attr.timeout      = 14;
+      attr.retry_cnt      = 7;
+      attr.rnr_retry      = 7;
+      attr.sq_psn     = local_psn;
+      attr.max_rd_atomic  = 1;
+      if (ibv_modify_qp(qp, &attr,
+            IBV_QP_STATE              |
+            IBV_QP_TIMEOUT            |
+            IBV_QP_RETRY_CNT          |
+            IBV_QP_RNR_RETRY          |
+            IBV_QP_SQ_PSN             |
+            IBV_QP_MAX_QP_RD_ATOMIC)) {
+        fprintf(stderr, "Failed to modify QP[%d] to RTS\n", i);
+        return 1;
+      }
     }
   }
 
@@ -640,7 +648,11 @@ int YMPID_Init(int *argc, char ***argv, int* target_rank_list) {
     local_qpn_list = (int*) malloc(nprocs * sizeof(int)); NZ(local_qpn_list);
 
     for(i=0; i<nprocs; i++) {
-      local_qpn_list[i] = ctx->qp_list[i]->qp_num;
+      if(ctx->qp_list[i]) {
+        local_qpn_list[i] = ctx->qp_list[i]->qp_num;
+      } else {
+        local_qpn_list[i] = NULL;
+      }
       local_psn_list[i] = lrand48() & 0xffffff;
     }
 
@@ -913,6 +925,6 @@ int YMPI_Init(int *argc, char ***argv) {
   YMPID_Init(argc, argv, NULL);
 }
 
-int YMPI_Init_target_rank(int *argc, char ***argv, int* target_rank_list) {
+int YMPI_Init_ranklist(int *argc, char ***argv, int* target_rank_list) {
   YMPID_Init(argc, argv, target_rank_list);
 }
