@@ -9,7 +9,7 @@
 #define YMPI_QPN_HASH_SIZE    (1024*1024)
 
 // affect pending receive linked list for each process
-#define YMPI_RECV_PER_PROCESS (16)
+#define YMPI_RECV_PER_PROCESS (64)
 
 #define YMPI_SW               (1)
 #define YMPI_SW_DIY           (YMPI_SW)
