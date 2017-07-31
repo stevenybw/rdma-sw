@@ -22,7 +22,7 @@ typedef struct YMPID_Rdma_buffer {
 } YMPID_Rdma_buffer;
 
 // type of element, type of list
-DECLARE_LINKED_LIST(YMPID_Vbuf, -1, int);
+DECLARE_LINKED_LIST(int, -1, YMPID_Vbuf_queue);
 
 typedef struct YMPID_Recv_win {
   /* buffer: the memory region */
@@ -119,7 +119,7 @@ static inline int YMPID_Qpn_rank(int qpn) {
 
 #endif //YMPI_SW
 
-static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_port, int rank, int nprocs)
+static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_port, int rank, int nprocs, int *target_rank_list)
 {
   ctx = malloc(sizeof(*ctx));
   if (!ctx)
@@ -431,11 +431,11 @@ static int YMPID_Return() {
         .id  = buf_id
       }
     };
-    sge.addr = &buf[buf_id * YMPI_VBUF_SIZE];
+    sge.addr = &buf[buf_id * YMPI_VBUF_BYTES];
     wr.wr_id = wr_id.val;
 
     int err;
-    LOGV("ibv_post_srq_recv id=%d addr=%p lkey=%u ok=%d\n", wr_id.tagid.id, curr.addr, sge.lkey, ok);
+    // LOGV("ibv_post_srq_recv id=%d addr=%p lkey=%u ok=%d\n", wr_id.tagid.id, curr.addr, sge.lkey, ok);
     if((err = ibv_post_srq_recv(ctx->srq, &wr, &bad_wr))) {
       LOGD("ibv_post_srq_recv failed with %d, errno=%d [%s]\n", err, errno, strerror(errno));
       return err; 
@@ -546,7 +546,7 @@ int YMPI_Get_buffer(YMPI_Rdma_buffer buffer, uintptr_t* buf) {
   return 0;
 }
 
-int YMPI_Init(int *argc, char ***argv) {
+int YMPID_Init(int *argc, char ***argv, int* target_rank_list) {
   int rank, nprocs;
   int ib_port = 1;
   
@@ -577,7 +577,7 @@ int YMPI_Init(int *argc, char ***argv) {
       return -1;
     }
 
-    ctx = YMPID_Context_create(ib_dev, ib_port, rank, nprocs);
+    ctx = YMPID_Context_create(ib_dev, ib_port, rank, nprocs, target_rank_list);
     if (!ctx) {
       return -1;
     }
@@ -805,7 +805,7 @@ int YMPI_Zrecv(void** recv_buffer_ptr, uint64_t* recv_buffer_len_ptr, int source
     {
       int buf_id = YMPID_Vbuf_queue_dequeue(&pending_recv_queue[source]);
       if(buf_id != -1) {
-        (*recv_buffer_ptr) = &buf[buf_id * YMPI_VBUF_SIZE];
+        (*recv_buffer_ptr) = &buf[buf_id * YMPI_VBUF_BYTES];
         (*recv_buffer_len_ptr) = buf_bytes[buf_id];
         YMPID_Vbuf_queue_enqueue(vbuf_fetched, buf_id);
         break;
@@ -907,4 +907,12 @@ int YMPI_Zrecvany(int num_message, void* recv_buffers[], uint64_t recv_buffers_l
 int YMPI_Return() {
   YMPID_Return();
   return 0;
+}
+
+int YMPI_Init(int *argc, char ***argv) {
+  YMPID_Init(argc, argv, NULL);
+}
+
+int YMPI_Init_target_rank(int *argc, char ***argv, int* target_rank_list) {
+  YMPID_Init(argc, argv, target_rank_list);
 }
