@@ -7,19 +7,32 @@ static inline void do_allputall(YMPI_Rdma_buffer send_buffer, int batch_size, in
 {
   int k, q;
   if(rank < np) {
-    for(k=0; k<batch_size; k++) {
-      for(q=(rank+1)&np_mask; q!=rank; q=(q+1)&np_mask) {
-        YMPI_Zsend(send_buffer, q*nb, nb, q);
-      }
-      YMPI_Zflush();
-      for(q=(rank+1)&np_mask; q!=rank; q=(q+1)&np_mask) {
-        void* ptr;
-        uint64_t len;
-        YMPI_Zrecv(&ptr, &len, q);
-      }
+    for(q=(rank+1)&np_mask; q!=rank; q=(q+1)&np_mask) {
+      YMPI_Zsend(send_buffer, q*nb, nb, q);
     }
-    MPI_Barrier(MPI_COMM_WORLD);
+    YMPI_Zflush();
+    for(q=(rank+1)&np_mask; q!=rank; q=(q+1)&np_mask) {
+      void* ptr;
+      uint64_t len;
+      YMPI_Zrecv(&ptr, &len, q);
+    }
     YMPI_Return();
+  }
+}
+
+static inline void do_allputall_header(int rank)
+{
+  if(rank == 0) {
+    printf("%16s%16s%16s\n", "nprocs", "bytes", "Mmesg/s(per proc)");
+  }
+}
+
+static inline void do_allputall_output(int batch_size, int rank, int np, int np_mask, int nb, int iter, int skip, double time)
+{
+  if(rank == 0) {
+    int nsend_mesg  = (np-1) * (iter-skip);
+    double msg_rate = (double)nsend_mesg / time / 1000.0 / 1000.0;
+    printf("%16d%16d%16.2f\n", np, nb, msg_rate);
   }
 }
 
@@ -69,6 +82,7 @@ static inline void do_fanout(YMPI_Rdma_buffer send_buffer, int batch_size, int r
     void* ptr;
     uint64_t len;
     YMPI_Zrecv(&ptr, &len, 0);
+    YMPI_Return();
   }
 }
 
@@ -90,14 +104,15 @@ static inline void do_fanout_output(int batch_size, int rank, int np, int np_mas
 
 static inline void do_fanin(YMPI_Rdma_buffer send_buffer, int batch_size, int rank, int np, int np_mask, int nb)
 {
-  // sender
+  // receiver
   if(rank == 0) {
     int i;
     for(i=1; i<np; i++) {
       void* ptr;
       uint64_t len;
-      YMPI_Zrecv(&ptr, &len, 0);
+      YMPI_Zrecv(&ptr, &len, i);
     }
+    YMPI_Return();
   } else if (rank < np) {
     YMPI_Zsend(send_buffer, 0, nb, 0);
     YMPI_Zflush();
@@ -142,7 +157,6 @@ for(np=2; np<=NPROCS; np*=2) {                                                  
                                                                                                     \
       MPI_Barrier(comm);                                                                            \
       ACTION ## _output(batch_size, rank, np, np_mask, nb, iter, skip, duration);                   \
-      YMPI_Return();                                                                                \
     }                                                                                               \
   }                                                                                                 \
   MPI_Comm_free(&comm);                                                                             \
@@ -151,10 +165,11 @@ for(np=2; np<=NPROCS; np*=2) {                                                  
 
 int main(void)
 {
+  MPI_Init(NULL, NULL);
   YMPI_Init(NULL, NULL);
 
   int np, nb;
-  int rank, nprocs, bytes=4*1024, iter=256, batch_size=32, skip=32;
+  int rank, nprocs, bytes=4*1024, iter=16, batch_size=8, skip=0;
 
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
@@ -169,13 +184,13 @@ int main(void)
 
   MPI_Barrier(MPI_COMM_WORLD);
   if(rank == 0) {
-    printf("TEST 1: Fan-out bandwidth\n");
+    printf("TEST 1: Fan-out throughput\n");
   }
-  TEST(do_fanout, 16);
+  TEST(do_fanout, nprocs);
 
   MPI_Barrier(MPI_COMM_WORLD);
   if(rank == 0) {
-    printf("TEST 2: Fan-in  bandwidth\n");
+    printf("TEST 2: Fan-in  throughput\n");
   }
   TEST(do_fanin, nprocs);
 
@@ -185,38 +200,14 @@ int main(void)
   }
   TEST(do_pingpong, 2);
 
-
-
-  /*
-
   MPI_Barrier(MPI_COMM_WORLD);
   if(rank == 0) {
-    printf("TEST 2: All-put-all bandwidth\n");
+    printf("TEST 4: All-put-all throughput\n");
   }
+  TEST(do_allputall, nprocs);
 
-  for(np=2; np<=nprocs; np*=2) {
-    int np_mask = np-1;
-    for(nb=32; nb<=bytes; nb*=2) {
-      MPI_Barrier(MPI_COMM_WORLD);
-      double bt = 0;
-      int i;
-      for(i=0; i<iter; i++) {
-        if(i==skip) {
-          MPI_Barrier(MPI_COMM_WORLD);
-          bt = MPI_Wtime();
-        }
-        do_allputall(batch_size, rank, np, np_mask, nb);
-      }
-      double duration = MPI_Wtime() - bt;
-
-      if(rank == 0) {
-        printf("%d procs   %d bytes   %.2lf us\n", np, nb, 1e6*duration/(iter-skip)/batch_size);
-      }
-      MPI_Barrier(MPI_COMM_WORLD);
-    }
-  }
-  */
 
   YMPI_Finalize();
+  MPI_Finalize();
   return 0;
 }
