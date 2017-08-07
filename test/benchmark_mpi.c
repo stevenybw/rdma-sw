@@ -11,7 +11,7 @@ MPI_Request reqs[MAX_NP];
 
 static inline void do_allputall(char* send_buffer, int batch_size, int rank, int np, int np_mask, int nb)
 {
-  int k, q;
+  int q;
   if(rank < np) {
     for(q=(rank+1)&np_mask; q!=rank; q=(q+1)&np_mask) {
       MPI_Isend(send_buffer+q*nb, nb, MPI_CHAR, q, COMM_TAG, MPI_COMM_WORLD, &reqs[q]);
@@ -45,9 +45,9 @@ static inline void do_pingpong(char* send_buffer, int batch_size, int rank, int 
   // sender
   if(rank == 0) {
     MPI_Send(send_buffer, nb, MPI_CHAR, 1, COMM_TAG, MPI_COMM_WORLD);
-    MPI_Recv(rbuf, nb, MPI_CHAR, 1, COMM_TAG, MPI_COMM_WORLD);
+    MPI_Recv(rbuf, nb, MPI_CHAR, 1, COMM_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
   } else if (rank == 1) {
-    MPI_Recv(rbuf, nb, MPI_CHAR, 0, COMM_TAG, MPI_COMM_WORLD);
+    MPI_Recv(rbuf, nb, MPI_CHAR, 0, COMM_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     MPI_Send(send_buffer, nb, MPI_CHAR, 0, COMM_TAG, MPI_COMM_WORLD);
   }
 }
@@ -104,8 +104,6 @@ static inline void do_fanin(char* send_buffer, int batch_size, int rank, int np,
   if(rank == 0) {
     int i;
     for(i=1; i<np; i++) {
-      void* ptr;
-      uint64_t len;
       MPI_Recv(rbuf, nb, MPI_CHAR, i, COMM_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     }
   } else if (rank < np) {
@@ -168,7 +166,6 @@ int main(void)
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
   void* sb;
-  uintptr_t sb_ptr = 0;
   char* send_buffer;
   send_buffer = (char*) malloc(nprocs * bytes);
   sb = (void*) send_buffer;
