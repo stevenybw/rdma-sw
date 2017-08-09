@@ -40,6 +40,15 @@ test/test_ympi_coll: test/test_ympi_coll.c src/ympi.c include/ympi.h include/com
 test/test_ympi.x86: test/test_ympi.c src/ympi.c include/ympi.h include/common.h
 	/usr/sw-mpp/mpi2_x86/bin/mpicc -L/usr/sw-cluster/slurm-16.05.3/lib $(CFLAGS_X86) -o test/test_ympi.x86 test/test_ympi.c src/ympi.c
 
+benchmark/ympi_latency: benchmark/ympi_latency.c src/ympi.c include/ympi.h include/common.h
+	mpicc $(CFLAGS) -o benchmark/ympi_latency -I/usr/sw-mpp/include -Iinclude benchmark/ympi_latency.c src/ympi.c
+
+benchmark/ympi_fan: benchmark/ympi_fan.c src/ympi.c include/ympi.h include/common.h
+	mpicc $(CFLAGS) -o benchmark/ympi_fan -I/usr/sw-mpp/include -Iinclude benchmark/ympi_fan.c src/ympi.c
+
+benchmark/ympi_allputall: benchmark/ympi_allputall.c src/ympi.c include/ympi.h include/common.h
+	mpicc $(CFLAGS) -o benchmark/ympi_allputall -I/usr/sw-mpp/include -Iinclude benchmark/ympi_allputall.c src/ympi.c
+
 clean:
 	rm -f $(TARGET)
 
