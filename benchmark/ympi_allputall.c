@@ -1,13 +1,17 @@
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
+
 #include <mpi.h>
 #include "ympi.h"
+#include "common.h"
 
 #define MAX_NUM_PROCS (4*40*1024)
 #define ALLPUTALL_NUMPROCS (32)
 
 static int local_rank_to_global_rank[MAX_NUM_PROCS];
 static int target_rank_list[MAX_NUM_PROCS];
+static int target_rank_list_1[MAX_NUM_PROCS];
 
 static int shuffle_rank(int rank, int nprocs)
 {
@@ -24,14 +28,18 @@ static inline void do_allputall(YMPI_Rdma_buffer send_buffer, int batch_size, in
     int group_off  = rank%ALLPUTALL_NUMPROCS;
     for(i=1; i<ALLPUTALL_NUMPROCS; i++) {
       int q = group_base + (group_off + i) % ALLPUTALL_NUMPROCS;
+      assert(q < np);
       YMPI_Zsend(send_buffer, i*nb, nb, local_rank_to_global_rank[q]);
+      // YMPI_Zsend(send_buffer, i*nb, nb, q);
     }
     YMPI_Zflush();
     for(i=1; i<ALLPUTALL_NUMPROCS; i++) {
       void* ptr;
       uint64_t len;
       int q = group_base + (group_off + i) % ALLPUTALL_NUMPROCS;
+      assert(q < np);
       YMPI_Zrecv(&ptr, &len, local_rank_to_global_rank[q]);
+      // YMPI_Zrecv(&ptr, &len, q);
     }
     YMPI_Return();
   }
@@ -53,11 +61,13 @@ static inline void do_allputall_output(int batch_size, int rank, int np, int np_
   }
 }
 
-#define TEST(ACTION, NPROCS) do {                                                                   \
+#define TEST_SHUFFLE(ACTION, NPROCS) do {                                                           \
+int rank   = shuffled_rank;                                                                         \
+int nprocs = shuffled_nprocs;                                                                       \
 ACTION ## _header(rank);                                                                            \
-for(np=2; np<=NPROCS; np*=2) {                                                                      \
+for(np=ALLPUTALL_NUMPROCS; np<=NPROCS; np*=2) {                                                     \
   MPI_Comm comm;                                                                                    \
-  MPI_Comm_split(MPI_COMM_WORLD, rank<np, rank, &comm);                                             \
+  MPI_Comm_split(shuffled_comm_world, rank<np, rank, &comm);                                        \
   if(rank < np) {                                                                                   \
     int np_mask = np-1;                                                                             \
     for(nb=1; nb<=bytes; nb*=2) {                                                                   \
@@ -81,35 +91,7 @@ for(np=2; np<=NPROCS; np*=2) {                                                  
 }                                                                                                   \
 }while(0)
 
-#define TEST_SHUFFLE(ACTION, NPROCS) do {                                                                   \
-MPI_Allgather(&rank, 1, MPI_INT, local_rank_to_global_rank, 1, MPI_INT, shuffled_comm_world);
-ACTION ## _header(rank);                                                                            \
-for(np=2; np<=NPROCS; np*=2) {                                                                      \
-  MPI_Comm comm;                                                                                    \
-  MPI_Comm_split(shuffled_comm_world, rank<np, rank, &comm);                                             \
-  if(rank < np) {                                                                                   \
-    int np_mask = np-1;                                                                             \
-    for(nb=1; nb<=bytes; nb*=2) {                                                                   \
-      MPI_Barrier(comm);                                                                            \
-      int i;                                                                                        \
-      double duration = 0;                                                                          \
-      for(i=0; i<iter; i++) {                                                                       \
-        if(i==skip) {                                                                               \
-          MPI_Barrier(comm);                                                                        \
-          duration -= MPI_Wtime();                                                                  \
-        }                                                                                           \
-        ACTION(send_buffer, batch_size, rank, np, np_mask, nb);                                     \
-      }                                                                                             \
-      duration += MPI_Wtime();                                                                      \
-                                                                                                    \
-      MPI_Barrier(comm);                                                                            \
-      ACTION ## _output(batch_size, rank, np, np_mask, nb, iter, skip, duration);                   \
-    }                                                                                               \
-  }                                                                                                 \
-  MPI_Comm_free(&comm);                                                                             \
-}                                                                                                   \
-}while(0)
-
+/*
 int Check_precondition()
 {
   int nprocs;
@@ -119,25 +101,37 @@ int Check_precondition()
   }
   assert(nprocs==1);
 }
+*/
 
 int main(void)
 {
   MPI_Init(NULL, NULL);
 
-  Check_precondition();
+  // Check_precondition();
 
   int np, nb;
-  int rank, nprocs, bytes=4*1024, iter=16, batch_size=8, skip=0;
+  int rank, nprocs, bytes=4*1024, iter=8, batch_size=8, skip=0;
   MPI_Comm shuffled_comm_world;
   int shuffled_rank, shuffled_nprocs;
 
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  if(rank == 0) {
+    printf("TEST 4: All-put-all throughput\n");
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
   
-  MPI_Comm_split(MPI_COMM_WORLD, 0, shuffle_rank(rank), &shuffled_comm_world);
+  MPI_Comm_split(MPI_COMM_WORLD, 0, shuffle_rank(rank, nprocs), &shuffled_comm_world);
   MPI_Comm_rank(shuffled_comm_world, &shuffled_rank);
   MPI_Comm_size(shuffled_comm_world, &shuffled_nprocs);
   assert(shuffled_nprocs == nprocs);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  if(rank == 0) {
+    printf("  MPI_Comm_split\n");
+  }
 
   {
     int i;
@@ -149,11 +143,13 @@ int main(void)
     MPI_Allgather(&rank, 1, MPI_INT, local_rank_to_global_rank, 1, MPI_INT, shuffled_comm_world);
     for(i=1; i<ALLPUTALL_NUMPROCS; i++) {
       int dest = group_base + (group_off + i) % ALLPUTALL_NUMPROCS; 
-      target_rank_list[i] = dest;
+      target_rank_list[local_rank_to_global_rank[dest]] = 1;
     }
+    LOGD("group_base=%d  group_off=%d\n", group_base, group_off);
   }
 
-  YMPI_Init_ranklist(NULL, NULL);
+  //YMPI_Init_ranklist(NULL, NULL, target_rank_list);
+  YMPI_Init(NULL, NULL);
 
   void* sb;
   uintptr_t sb_ptr = 0;
@@ -164,10 +160,7 @@ int main(void)
   memset(sb, 0, ALLPUTALL_NUMPROCS * bytes);
 
   MPI_Barrier(MPI_COMM_WORLD);
-  if(rank == 0) {
-    printf("TEST 4: All-put-all throughput\n");
-  }
-  TEST(do_allputall, nprocs);
+  TEST_SHUFFLE(do_allputall, nprocs);
 
   YMPI_Finalize();
   MPI_Finalize();

@@ -732,6 +732,8 @@ int YMPI_Zsend(YMPI_Rdma_buffer buffer, size_t offset, size_t bytes, int dest) {
 
   struct ibv_send_wr* bad_wr = NULL;
 
+  assert(ctx->qp_list[dest] != NULL);
+
   int err;
   if((err = ibv_post_send(ctx->qp_list[dest], &wr, &bad_wr))) {
     LOGD("ibv_post_send to %d returned %d, errno = %d[%s]\n", dest, err, errno, strerror(errno));

@@ -19,6 +19,7 @@ static inline void do_pingpong(YMPI_Rdma_buffer send_buffer, int batch_size, int
     YMPI_Zsend(send_buffer, 0, nb, 0);
     YMPI_Zflush();
   }
+  YMPI_Return();
 }
 
 static inline void do_pingpong_header(int rank)
@@ -43,7 +44,7 @@ for(np=2; np<=NPROCS; np*=2) {                                                  
   MPI_Comm_split(MPI_COMM_WORLD, rank<np, rank, &comm);                                             \
   if(rank < np) {                                                                                   \
     int np_mask = np-1;                                                                             \
-    for(nb=32; nb<=bytes; nb*=2) {                                                                  \
+    for(nb=1; nb<=bytes; nb*=2) {                                                                  \
       MPI_Barrier(comm);                                                                            \
       int i;                                                                                        \
       double duration = 0;                                                                          \
@@ -70,7 +71,7 @@ int main(void)
   YMPI_Init(NULL, NULL);
 
   int np, nb;
-  int rank, nprocs, bytes=4*1024, iter=1024, skip=32;
+  int rank, nprocs, bytes=4*1024, iter=1024, batch_size=0, skip=32;
 
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
