@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 #define YMPI_PAGE_SIZE        (1024*1024)
-#define YMPI_VBUF_BYTES       (256*1024)
-#define YMPI_PREPOST_DEPTH    (1024)
+#define YMPI_VBUF_BYTES       (2*1024*1024)
+#define YMPI_PREPOST_DEPTH    (128)
 #define YMPI_QPN_HASH_SIZE    (1024*1024)
 
 // affect pending receive linked list for each process
