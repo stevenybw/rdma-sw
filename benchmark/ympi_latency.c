@@ -1,7 +1,23 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <mpi.h>
 #include "ympi.h"
+
+#define MAX_ITER 1024
+
+static int compare_double(const void* a, const void* b)
+{
+  double lhs = *((const double*) a);
+  double rhs = *((const double*) b);
+  if(lhs > rhs) {
+    return 1;
+  } else if (lhs == rhs) {
+    return 0;
+  } else {
+    return -1;
+  }
+}
 
 static inline void do_pingpong(YMPI_Rdma_buffer send_buffer, int batch_size, int rank, int np, int np_mask, int nb)
 {
@@ -25,15 +41,21 @@ static inline void do_pingpong(YMPI_Rdma_buffer send_buffer, int batch_size, int
 static inline void do_pingpong_header(int rank)
 {
   if(rank == 0) {
-    printf("%16s%16s%16s\n", "nprocs", "bytes", "us");
+    printf("%16s%16s%16s\n", "nprocs", "bytes", "median(us)");
   }
 }
+
+double timing_result[MAX_ITER];
 
 static inline void do_pingpong_output(int batch_size, int rank, int np, int np_mask, int nb, int iter, int skip, double time)
 {
   if(rank == 0) {
-    double latency = (double) 1e6 * time / (iter - skip) / 2.0;
-    printf("%16d%16d%16.2f\n", np, nb, latency);
+    qsort(timing_result, iter, sizeof(double), compare_double);
+    int i;
+    for(i=0; i<iter; i++) {
+      printf("  %16d%16lf\n", i, 1e6 * timing_result[i]);
+    }
+    printf("%16d%16d%16.2f\n", np, nb, timing_result[iter/2]);
   }
 }
 
@@ -45,20 +67,16 @@ for(np=2; np<=NPROCS; np*=2) {                                                  
   if(rank < np) {                                                                                   \
     int np_mask = np-1;                                                                             \
     for(nb=1; nb<=bytes; nb*=2) {                                                                  \
-      MPI_Barrier(comm);                                                                            \
       int i;                                                                                        \
-      double duration = 0;                                                                          \
       for(i=0; i<iter; i++) {                                                                       \
-        if(i==skip) {                                                                               \
-          MPI_Barrier(comm);                                                                        \
-          duration -= MPI_Wtime();                                                                  \
-        }                                                                                           \
+        MPI_Barrier(comm);                                                                            \
+        double duration = -MPI_Wtime();                                                             \
         ACTION(send_buffer, batch_size, rank, np, np_mask, nb);                                     \
+        duration += MPI_Wtime();                                                                      \
+        timing_result[i] = duration;                                                                \
       }                                                                                             \
-      duration += MPI_Wtime();                                                                      \
-                                                                                                    \
       MPI_Barrier(comm);                                                                            \
-      ACTION ## _output(batch_size, rank, np, np_mask, nb, iter, skip, duration);                   \
+      ACTION ## _output(batch_size, rank, np, np_mask, nb, iter, skip, 0.0);                        \
     }                                                                                               \
   }                                                                                                 \
   MPI_Comm_free(&comm);                                                                             \

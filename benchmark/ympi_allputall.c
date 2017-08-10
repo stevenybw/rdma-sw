@@ -7,7 +7,9 @@
 #include "common.h"
 
 #define MAX_NUM_PROCS (4*40*1024)
-#define ALLPUTALL_NUMPROCS (32)
+#define ALLPUTALL_NUMPROCS (128)
+
+#define DISTANCE (1)
 
 static int local_rank_to_global_rank[MAX_NUM_PROCS];
 static int target_rank_list[MAX_NUM_PROCS];
@@ -16,7 +18,7 @@ static int target_rank_list_1[MAX_NUM_PROCS];
 static int shuffle_rank(int rank, int nprocs)
 {
   unsigned long long result = rank;
-  result = (result * 15485867) % nprocs;
+  result = (result * DISTANCE) % nprocs;
   return (int)result;
 }
 
@@ -52,11 +54,17 @@ static inline void do_allputall_header(int rank)
   }
 }
 
-static inline void do_allputall_output(int batch_size, int rank, int np, int np_mask, int nb, int iter, int skip, double time)
+static inline void do_allputall_output(MPI_Comm comm, int batch_size, int rank, int np, int np_mask, int nb, int iter, int skip, double time)
 {
+  int nprocs;
+  MPI_Comm_size(comm, &nprocs);
+  assert(nprocs == np);
+  double total_time;
+  MPI_Allreduce(&time, &total_time, 1, MPI_DOUBLE, MPI_SUM, comm);
+  double avg_time = total_time/np;
   if(rank == 0) {
     int nsend_mesg  = (ALLPUTALL_NUMPROCS-1) * (iter-skip);
-    double msg_rate = (double)nsend_mesg / time / 1000.0 / 1000.0;
+    double msg_rate = (double)nsend_mesg / avg_time / 1000.0 / 1000.0;
     printf("%16d%16d%16.2f\n", np, nb, msg_rate);
   }
 }
@@ -84,7 +92,7 @@ for(np=ALLPUTALL_NUMPROCS; np<=NPROCS; np*=2) {                                 
       duration += MPI_Wtime();                                                                      \
                                                                                                     \
       MPI_Barrier(comm);                                                                            \
-      ACTION ## _output(batch_size, rank, np, np_mask, nb, iter, skip, duration);                   \
+      ACTION ## _output(comm, batch_size, rank, np, np_mask, nb, iter, skip, duration);             \
     }                                                                                               \
   }                                                                                                 \
   MPI_Comm_free(&comm);                                                                             \
@@ -110,7 +118,7 @@ int main(void)
   // Check_precondition();
 
   int np, nb;
-  int rank, nprocs, bytes=4*1024, iter=8, batch_size=8, skip=0;
+  int rank, nprocs, bytes=4*1024, iter=2, batch_size=8, skip=0;
   MPI_Comm shuffled_comm_world;
   int shuffled_rank, shuffled_nprocs;
 
@@ -120,6 +128,7 @@ int main(void)
   MPI_Barrier(MPI_COMM_WORLD);
   if(rank == 0) {
     printf("TEST 4: All-put-all throughput\n");
+    printf("  SHUFFLE_DISTANCE: %d\n", DISTANCE);
   }
   MPI_Barrier(MPI_COMM_WORLD);
   
@@ -138,18 +147,26 @@ int main(void)
     memset(target_rank_list, 0, sizeof(target_rank_list));
 
     // allputall_shuffled
-    int group_base = rank/ALLPUTALL_NUMPROCS*ALLPUTALL_NUMPROCS;
-    int group_off  = rank%ALLPUTALL_NUMPROCS;
+    int group_base = shuffled_rank/ALLPUTALL_NUMPROCS*ALLPUTALL_NUMPROCS;
+    int group_off  = shuffled_rank%ALLPUTALL_NUMPROCS;
     MPI_Allgather(&rank, 1, MPI_INT, local_rank_to_global_rank, 1, MPI_INT, shuffled_comm_world);
     for(i=1; i<ALLPUTALL_NUMPROCS; i++) {
       int dest = group_base + (group_off + i) % ALLPUTALL_NUMPROCS; 
       target_rank_list[local_rank_to_global_rank[dest]] = 1;
     }
-    LOGD("group_base=%d  group_off=%d\n", group_base, group_off);
+    // LOGD("group_base=%d  group_off=%d\n", group_base, group_off);
+  }
+  {
+    LOGDS("local_rank_to_global_rank: \n");
+    int i=0;
+    for(i=0; i<nprocs; i++) {
+      LOGDS("%d ", local_rank_to_global_rank[i]);
+    }
+    LOGDS("\n");
   }
 
-  //YMPI_Init_ranklist(NULL, NULL, target_rank_list);
-  YMPI_Init(NULL, NULL);
+  YMPI_Init_ranklist(NULL, NULL, target_rank_list);
+  //YMPI_Init(NULL, NULL);
 
   void* sb;
   uintptr_t sb_ptr = 0;
