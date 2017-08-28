@@ -4,20 +4,10 @@
 #include <mpi.h>
 #include "ympi.h"
 
-#define MAX_ITER 1024
+#define MAX_ITER 16*1024
 
-static int compare_double(const void* a, const void* b)
-{
-  double lhs = *((const double*) a);
-  double rhs = *((const double*) b);
-  if(lhs > rhs) {
-    return 1;
-  } else if (lhs == rhs) {
-    return 0;
-  } else {
-    return -1;
-  }
-}
+#define LOGD(...) do {int rank;MPI_Comm_rank(MPI_COMM_WORLD, &rank); printf("[%4d]", rank); printf(__VA_ARGS__); }while(0)
+#define LOGDS(...) do {int rank;MPI_Comm_rank(MPI_COMM_WORLD, &rank);if (rank==0) {printf("[%4d]", rank); printf(__VA_ARGS__);}}while(0)
 
 static inline void do_pingpong(YMPI_Rdma_buffer send_buffer, int batch_size, int rank, int np, int np_mask, int nb)
 {
@@ -40,22 +30,49 @@ static inline void do_pingpong(YMPI_Rdma_buffer send_buffer, int batch_size, int
 
 static inline void do_pingpong_header(int rank)
 {
-  if(rank == 0) {
-    printf("%16s%16s%16s\n", "nprocs", "bytes", "median(us)");
+}
+
+typedef struct iter_time_pair {
+  int iter;
+  double time;
+} iter_time_pair;
+
+static int compare_double(const void* a, const void* b)
+{
+  double lhs = *((const double*) a);
+  double rhs = *((const double*) b);
+  if(lhs > rhs) {
+    return 1;
+  } else if (lhs == rhs) {
+    return 0;
+  } else {
+    return -1;
   }
 }
 
+static int compare_iter_time_pair(const void* a, const void* b)
+{
+  iter_time_pair lhs = *((const iter_time_pair*) a);
+  iter_time_pair rhs = *((const iter_time_pair*) b);
+  return compare_double(&(lhs.time), &(rhs.time));
+}
+
 double timing_result[MAX_ITER];
+iter_time_pair ordered_timing_result[MAX_ITER];
 
 static inline void do_pingpong_output(int batch_size, int rank, int np, int np_mask, int nb, int iter, int skip, double time)
 {
   if(rank == 0) {
-    qsort(timing_result, iter, sizeof(double), compare_double);
     int i;
     for(i=0; i<iter; i++) {
-      printf("  %16d%16lf\n", i, 1e6 * timing_result[i]);
+      timing_result[i] = 1e6 * 0.5 * timing_result[i];
+      ordered_timing_result[i] = (iter_time_pair) {i, timing_result[i]};
     }
-    printf("%16d%16d%16.2f\n", np, nb, timing_result[iter/2]);
+    qsort(ordered_timing_result, iter, sizeof(iter_time_pair), compare_iter_time_pair);
+    printf("nprocs=%d  bytes=%d  median(us)=%lf\n", np, nb, ordered_timing_result[iter/2].time);
+    for(i=0; i<iter; i++) {
+      printf("  %16d%16lf(%16lf,%8d)\n", i, timing_result[i], ordered_timing_result[i].time, ordered_timing_result[i].iter);
+    }
   }
 }
 
@@ -89,7 +106,9 @@ int main(void)
   YMPI_Init(NULL, NULL);
 
   int np, nb;
-  int rank, nprocs, bytes=4*1024, iter=1024, batch_size=0, skip=32;
+  int rank, nprocs, bytes=4*1024, iter=MAX_ITER, batch_size=0, skip=32;
+
+  LOGDS("MAX_ITER: %d\n", MAX_ITER);
 
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);

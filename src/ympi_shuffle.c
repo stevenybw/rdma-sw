@@ -10,7 +10,7 @@
 
 #define ARCH_SW
 
-#define LOCAL_BITS (20)
+#define LOCAL_BITS (10)
 #define LOCAL_SIZE (1LL << LOCAL_BITS)
 
 #define MAX_NPROCS     (4*40*1024)
@@ -279,15 +279,50 @@ int YMPI_Shuffle(uint64_t* buf, size_t buf_len, uint64_t* rst, size_t* rst_len)
     }
   }
   {
+    MPI_Request req[8];
+
     uint64_t shuffle_buffer[5][256];
     uint64_t shuffle_buffer_len[5];
+    uint64_t recvBuffers[5][256];
+    uint64_t recvBufferLens[5];
     memset(shuffle_buffer_len, 0, sizeof(shuffle_buffer_len));
     // shuffle using generated route table
     int iter = 0;
     for(iter=0; iter<total_iter; iter++) {
       int group_base = iter_group_base[iter];
       int group_size = iter_group_size[iter];
-      
+      int my_id = rank / group_base % group_size;
+      int j;
+      for(j=0; j<buf_len; j++) {
+        u64Int inmsg = buf[j];
+        int dst = inmsg >> LOCAL_BITS;
+        int id  = dst / group_base % group_size;
+        shuffle_buffer[id][shuffle_buffer_len++] = inmsg;
+      }
+      {
+        int id;
+        for(id=0; id<group_size; id++) {
+          if(id != my_id) {
+            int q = rank / group_base * group_base + id;
+            MPI_Isend(&shuffle_buffer[id][0], shuffle_buffer_len[id], MPI_LONG_LONG_INT, q, RA_TAG, comm, &req[id]);
+          } else {
+            req[id] = MPI_REQUEST_NULL;
+          }
+        }
+        int cnt = 0;
+        for(id=0; id<group_size; id++) {
+          if(id != my_id) {
+            MPI_Status status;
+            int q = rank / group_base * group_base + id;
+            MPI_Recv(&recvBuffers[cnt][0], 256, MPI_CHAR, q, RA_TAG, comm, &status);
+            MPI_Get_count(&status, MPI_CHAR, &recvBufferLens[cnt]);
+            cnt++;
+          }
+        }
+      }
+      {
+        
+      }
     }
   }
   return 0;
