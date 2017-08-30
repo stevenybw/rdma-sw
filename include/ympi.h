@@ -40,6 +40,7 @@ int YMPI_Allocate(YMPI_Rdma_buffer *buffer, size_t bytes, int buffer_type);
 int YMPI_Alloc(YMPI_Rdma_buffer *buffer, size_t bytes);
 int YMPI_Dealloc(YMPI_Rdma_buffer *buffer);
 int YMPI_Get_buffer(YMPI_Rdma_buffer buffer, uintptr_t* buf);
+int YMPI_Get_rkey(YMPI_Rdma_buffer buffer, uint32_t* rkey);
 
 /* Part One: Zero Copy Messaging */
 
@@ -60,9 +61,8 @@ int YMPI_Return();
 
 
 /* Part Two: RDMA Operations */
-
-int YMPI_RDMA_Write(YMPI_Rdma_buffer local_src, size_t offset, size_t bytes, int dest, uint64_t dest_ptr);
-int YMPI_RDMA_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t* bytes, int src, uint64_t src_ptr);
+int YMPI_Write(YMPI_Rdma_buffer local_src, size_t offset, size_t bytes, int dest, uint32_t rkey, void* dest_ptr);
+int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t* bytes, int src, uint32_t rkey, void* src_ptr);
 
 #endif
 

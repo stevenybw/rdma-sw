@@ -7,6 +7,9 @@
 #include "ympi.h"
 
 #define SHOW_DETAIL 0
+#define RDMA_NUM_ELEM (YMPI_MAX_SEND_WR_PER_QP-1)
+
+#define MPI_TAG     1234
 
 int main(void) {
   int i, rank, nprocs;
@@ -67,6 +70,68 @@ int main(void) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   {
+    int k;
+    LOGDS("Testing RDMA operations correctness (%d packet)...\n", RDMA_NUM_ELEM);
+    if(rank == 0) {
+      YMPI_Rdma_buffer send_buffer;
+      uint64_t* sb   = NULL;
+      uint32_t  rkey = 0;
+      uint64_t* rb   = NULL;
+      uintptr_t sb_ptr = 0;
+      YMPI_Allocate(&send_buffer, RDMA_NUM_ELEM * sizeof(int64_t), YMPI_BUFFER_TYPE_REMOTE_ATOMIC);
+      YMPI_Get_buffer(send_buffer, &sb_ptr);
+      sb = (uint64_t*) sb_ptr;
+      MPI_Recv(&rb, 1, MPI_UNSIGNED_LONG_LONG, 1, MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      MPI_Recv(&rkey, 1, MPI_UNSIGNED, 1, MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      assert(sb != NULL);
+      assert(rb != NULL);
+
+      uint64_t* sig = &rb[0];
+      rb = &rb[YMPI_PAGE_SIZE / sizeof(int64_t)];
+      for(i=0; i<RDMA_NUM_ELEM; i++) {
+        sb[i] = 0x1111111111111111 + i;
+        YMPI_Write(send_buffer, i * sizeof(uint64_t), sizeof(uint64_t), 1, rkey, &rb[i]);
+      }
+      YMPI_Write(send_buffer, 0, sizeof(uint64_t), 1, rkey, sig);
+      ZERO(YMPI_Dealloc(&send_buffer));
+    } else if(rank == 1) {
+      YMPI_Rdma_buffer recv_buffer;
+      uint32_t  rkey = 0;
+      uint64_t* rb = NULL;
+      uintptr_t rb_ptr = 0;
+      YMPI_Allocate(&recv_buffer, YMPI_PAGE_SIZE + RDMA_NUM_ELEM * sizeof(int64_t), YMPI_BUFFER_TYPE_REMOTE_ATOMIC);
+      YMPI_Get_buffer(recv_buffer, &rb_ptr);
+      YMPI_Get_rkey(recv_buffer, &rkey);
+      rb = (uint64_t*) rb_ptr;
+      memset(rb, 0, YMPI_PAGE_SIZE + RDMA_NUM_ELEM * sizeof(int64_t));
+      MPI_Send(&rb, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_TAG, MPI_COMM_WORLD);
+      MPI_Send(&rkey, 1, MPI_UNSIGNED, 0, MPI_TAG, MPI_COMM_WORLD);
+      volatile uint64_t* sig = &rb[0];
+      printf("wait for synchronization message at sig=%p\n", sig);
+      {
+        while(*sig == 0);
+      }
+      printf("reveived signal %llu\n", *sig);
+      rb = &rb[YMPI_PAGE_SIZE / sizeof(int64_t)];
+      int err = 0;
+
+      for(i=0; i<RDMA_NUM_ELEM; i++) {
+        if(rb[i] != 0x1111111111111111 + i) {
+          printf("!!! ERROR at rb[%d]:  expected %llu   actual %llu\n", i, 0x1111111111111111 + i, rb[i]);
+          err = 1;
+        }
+      }
+      if(err) {
+        assert(0);
+      }
+    }
+  }
+
+  YMPI_Zflush();
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  {
     LOGDS("Benchmarking message rate (%d iters, %d mesg/iter, tx_depth=%d)...\n", iters, YMPI_MAX_SEND_WR_PER_QP, YMPI_MAX_SEND_WR_PER_QP);
     double wsec = 0.0;
     int k;
@@ -84,6 +149,7 @@ int main(void) {
         for(i=0; i<YMPI_MAX_SEND_WR_PER_QP; i++) {
           sb[i] = 0x1111111111111111 + i;
           YMPI_Zsend(send_buffer, i * sizeof(uint64_t), sizeof(uint64_t), 1);
+          // LOGD("Zsend sb[%llu] to %d\n", i*sizeof(uint64_t), 1);
         }
         YMPI_Zflush();
       }
@@ -100,6 +166,7 @@ int main(void) {
       for(k=0; k<iters; k++) {
         for(i=0; i<YMPI_MAX_SEND_WR_PER_QP; i++) {
           YMPI_Zrecv(&recv_buffers[i], &recv_buffers_len[i], 0);
+          // LOGD("Zrecv rb[%llu] from %d: len=%d\n", i*sizeof(uint64_t), 0, recv_buffers_len[i]);
         }
         YMPI_Return();
       }
@@ -135,9 +202,9 @@ int main(void) {
 
       for(i=0; i<YMPI_MAX_SEND_WR_PER_QP; i++) {
         YMPI_Zrecv(&recv_buffers[i], &recv_buffers_len[i], 0);
-        printf("recv_buffers_len[%d]  = %llu\n", i, recv_buffers_len[i]);
+        // printf("recv_buffers_len[%d]  = %llu\n", i, recv_buffers_len[i]);
         assert(recv_buffers_len[i] == 0);
-        printf("recv_buffers[%d]    = %p [%llu]\n", i, recv_buffers[i], *(recv_buffers[i]));
+        // printf("recv_buffers[%d]    = %p [%llu]\n", i, recv_buffers[i], *(recv_buffers[i]));
       }
       YMPI_Return();
     }

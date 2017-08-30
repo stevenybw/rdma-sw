@@ -45,8 +45,10 @@ typedef union YMPID_Wrid {
 } YMPID_Wrid;
 
 enum {
-  RECV_WRID = 1,
-  SEND_WRID = 2,
+  RECV_WRID =  1,
+  SEND_WRID =  2,
+  READ_WRID =  3,
+  WRITE_WRID = 4,
 };
 
 /*
@@ -281,7 +283,7 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
           .qp_state        = IBV_QPS_INIT,
           .pkey_index      = 0,
           .port_num        = ib_port,
-          .qp_access_flags = 0
+          .qp_access_flags = IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC,
         };
 
         if (ibv_modify_qp(qp, &attr,
@@ -577,6 +579,13 @@ int YMPI_Get_buffer(YMPI_Rdma_buffer buffer, uintptr_t* buf) {
   return 0;
 }
 
+int YMPI_Get_rkey(YMPI_Rdma_buffer buffer, uint32_t* rkey) {
+  YMPID_Rdma_buffer *buffer_d = (YMPID_Rdma_buffer*) buffer;
+  (*rkey) = (uint32_t) buffer_d->mr->rkey;
+
+  return 0;
+}
+
 int YMPID_Init(int *argc, char ***argv, int* target_rank_list) {
   int rank, nprocs;
   int ib_port = 1;
@@ -805,6 +814,13 @@ int YMPI_Zflush() {
             break;
           }
 
+          case WRITE_WRID:
+          {
+            ctx->pending_send_wr--;
+            assert(ctx->pending_send_wr>=0);
+            break;
+          }
+
           case RECV_WRID:
           {
             int rb_id = wr_id.tagid.id;
@@ -862,6 +878,12 @@ int YMPI_Zrecv(void** recv_buffer_ptr, uint64_t* recv_buffer_len_ptr, int source
             ctx->pending_send_wr--;
             assert(ctx->pending_send_wr>=0);
             break;
+          }
+
+          case WRITE_WRID:
+          {
+            ctx->pending_send_wr--;
+            assert(ctx->pending_send_wr>=0);
           }
 
           case RECV_WRID:
@@ -946,12 +968,69 @@ int YMPI_Init_ranklist(int *argc, char ***argv, int* target_rank_list) {
   return YMPID_Init(argc, argv, target_rank_list);
 }
 
-int YMPI_RDMA_Write(YMPI_Rdma_buffer local_src, size_t offset, size_t bytes, int dest, uint64_t dest_ptr) 
+int YMPI_Write(YMPI_Rdma_buffer local_src, size_t offset, size_t bytes, int dest, uint32_t rkey, void* dest_ptr) 
 {
+  // LOGD("YMPI_Write(dest=%d, rkey=%u, dest_ptr=%p)\n", dest, rkey, dest_ptr);
+  int send_flags;
+  YMPID_Rdma_buffer* buffer_d = (YMPID_Rdma_buffer*) local_src;
+  assert(offset + bytes <= buffer_d->bytes);
+
+  if (bytes < ctx->max_inline_data) {
+    send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+  } else {
+    send_flags = IBV_SEND_SIGNALED;
+  }
+
+  YMPID_Wrid wr_id = {
+    .tagid = {
+      .tag = WRITE_WRID,
+      .id  = dest,
+    }
+  };
+
+  struct ibv_sge sge = {
+    .addr   = (uint64_t) &((char*) buffer_d->buf)[offset],
+    .length = bytes,
+    .lkey   = buffer_d->mr->lkey,
+  };
+
+  struct ibv_send_wr wr = {
+    .wr_id         = (uint64_t) wr_id.val,
+    .next          = NULL,
+    .sg_list       = &sge,
+    .num_sge       = 1,
+    .opcode        = IBV_WR_RDMA_WRITE,
+    .send_flags    = send_flags,
+    .wr.rdma.remote_addr = (uint64_t) dest_ptr,
+    .wr.rdma.rkey        = rkey,
+  };
+
+  if(bytes == 0) {
+    wr.sg_list = NULL;
+    wr.num_sge = 0;
+  }
+
+  struct ibv_send_wr* bad_wr = NULL;
+
+  assert(ctx->qp_list[dest] != NULL);
+
+  int err;
+  if((err = ibv_post_send(ctx->qp_list[dest], &wr, &bad_wr))) {
+    LOGD("ibv_post_send to %d returned %d, errno = %d[%s]\n", dest, err, errno, strerror(errno));
+    return -1;
+  }
+
+  if(bad_wr) {
+    LOGD("bad_wr\n");
+    return -1;
+  }
+
+  ctx->pending_send_wr++;
+
   return 0;
 }
 
-int YMPI_RDMA_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t* bytes, int src, uint64_t src_ptr)
+int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t* bytes, int src, uint32_t rkey, void* src_ptr)
 {
   return 0;
 }
