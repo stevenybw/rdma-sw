@@ -1,8 +1,8 @@
 #ifndef COMMON_H_
 #define COMMON_H_
 
-#ifndef X86
-#include <athread.h>
+#ifdef YMPI_ARCH_SW
+  #include <athread.h>
 #endif
 
 #include <assert.h>

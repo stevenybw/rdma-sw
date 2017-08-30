@@ -15,6 +15,7 @@
 #include "linkedlist.h"
 
 typedef struct YMPID_Rdma_buffer {
+  int             buffer_type;
   void           *buf;
   size_t         *buf_bytes;
   size_t          bytes;
@@ -242,7 +243,7 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
              * CAUTION: max_send_wr = 1024, nprocs = 1024 can pass, but when nprocs = 4096,
              * in TaihuLight, nodes will DOWN!!
              */
-            .max_send_wr  = 8,
+            .max_send_wr  = YMPI_MAX_SEND_WR_PER_QP,
             .max_send_sge = 1,
           },
           .qp_type = IBV_QPT_RC
@@ -437,7 +438,7 @@ static int YMPID_Return() {
         .id  = buf_id
       }
     };
-    sge.addr = &buf[buf_id * YMPI_VBUF_BYTES];
+    sge.addr = (uintptr_t) &buf[buf_id * YMPI_VBUF_BYTES];
     wr.wr_id = wr_id.val;
 
     int err;
@@ -523,10 +524,32 @@ static int YMPID_Context_connect(YMPID_Context *ctx, enum ibv_mtu mtu,
   return 0;
 }
 
-
 int YMPI_Alloc(YMPI_Rdma_buffer* buffer, size_t bytes) {
+  return YMPI_Allocate(buffer, bytes, YMPI_BUFFER_TYPE_LOCAL);
+}
+
+int YMPI_Allocate(YMPI_Rdma_buffer* buffer, size_t bytes, int buffer_type) {
   YMPID_Rdma_buffer *buffer_d = NULL;
-  int access_flags = IBV_ACCESS_LOCAL_WRITE;
+  int access_flags;
+  switch(buffer_type)
+  {
+    case YMPI_BUFFER_TYPE_LOCAL:
+      access_flags = IBV_ACCESS_LOCAL_WRITE;
+      break;
+    case YMPI_BUFFER_TYPE_REMOTE_RO:
+      access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ;
+      break;
+    case YMPI_BUFFER_TYPE_REMOTE_RW:
+      access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+      break;
+    case YMPI_BUFFER_TYPE_REMOTE_ATOMIC:
+      access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
+      break;
+    default:
+      LOGD("YMPI_Allocate: unkonwn buffer type.\n");
+      exit(0);
+      return 0;
+  }
 
   buffer_d = malloc(sizeof(YMPID_Rdma_buffer)); NZ(buffer_d);
   buffer_d->buf   = memalign(YMPI_PAGE_SIZE, bytes); NZ(buffer_d->buf);
@@ -647,7 +670,7 @@ int YMPID_Init(int *argc, char ***argv, int* target_rank_list) {
       if(ctx->qp_list[i]) {
         local_qpn_list[i] = ctx->qp_list[i]->qp_num;
       } else {
-        local_qpn_list[i] = NULL;
+        local_qpn_list[i] = -1;
       }
       local_psn_list[i] = lrand48() & 0xffffff;
     }
@@ -916,9 +939,19 @@ int YMPI_Return() {
 }
 
 int YMPI_Init(int *argc, char ***argv) {
-  YMPID_Init(argc, argv, NULL);
+  return YMPID_Init(argc, argv, NULL);
 }
 
 int YMPI_Init_ranklist(int *argc, char ***argv, int* target_rank_list) {
-  YMPID_Init(argc, argv, target_rank_list);
+  return YMPID_Init(argc, argv, target_rank_list);
+}
+
+int YMPI_RDMA_Write(YMPI_Rdma_buffer local_src, size_t offset, size_t bytes, int dest, uint64_t dest_ptr) 
+{
+  return 0;
+}
+
+int YMPI_RDMA_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t* bytes, int src, uint64_t src_ptr)
+{
+  return 0;
 }
