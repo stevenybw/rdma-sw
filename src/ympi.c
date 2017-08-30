@@ -64,6 +64,7 @@ typedef struct YMPID_Context {
   YMPID_Recv_win       rx_win;
   struct ibv_qp      **qp_list;
   int                 *qp_rank;
+  int                 *qp_pending_send_wr;
 
   struct ibv_sge     *recv_sge_list;
   struct ibv_recv_wr *recv_wr_list;
@@ -131,7 +132,9 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
   ctx->port        = ib_port;
   ctx->rank        = rank;
   ctx->nprocs      = nprocs;
-  ctx->pending_send_wr = 0;
+  ctx->qp_pending_send_wr = malloc(nprocs * sizeof(int));
+  memset(ctx->qp_pending_send_wr, 0, nprocs * sizeof(int));
+  ctx->pending_send_wr  = 0;
 
 #if YMPI_SW
   int cgid         = sys_m_cgid();
@@ -731,30 +734,37 @@ static inline int process_wc(struct ibv_wc wc)
   YMPID_Wrid wr_id = {
     .val = wc.wr_id,
   };
+  int tag = wr_id.tagid.tag;
   if(wc.status != IBV_WC_SUCCESS) {
     LOGD("Failed status %s (%d) for wr_id %d:%d\n", 
       ibv_wc_status_str(wc.status), wc.status, (int) wr_id.tagid.tag, (int) wr_id.tagid.id);
     exit(-1);
   }
-  switch ((int) wr_id.tagid.tag) {
+  switch (tag) {
     case SEND_WRID:
     {
+      int qp_id = wr_id.tagid.id;
+      ctx->qp_pending_send_wr[qp_id]--;
       ctx->pending_send_wr--;
-      assert(ctx->pending_send_wr>=0);
+      assert(ctx->qp_pending_send_wr[qp_id]>=0);
       break;
     }
 
     case WRITE_WRID:
     {
+      int qp_id = wr_id.tagid.id;
+      ctx->qp_pending_send_wr[qp_id]--;
       ctx->pending_send_wr--;
-      assert(ctx->pending_send_wr>=0);
+      assert(ctx->qp_pending_send_wr[qp_id]>=0);
       break;
     }
 
     case READ_WRID:
     {
+      int qp_id = wr_id.tagid.id;
+      ctx->qp_pending_send_wr[qp_id]--;
       ctx->pending_send_wr--;
-      assert(ctx->pending_send_wr>=0);
+      assert(ctx->qp_pending_send_wr[qp_id]>=0);
       break;
     }
 
@@ -767,6 +777,8 @@ static inline int process_wc(struct ibv_wc wc)
       break;
     }
   }
+
+  return 0;
 }
 
 // post the **buffer** with specific **length of bytes** to **dest**
@@ -823,6 +835,7 @@ int YMPI_Zsend(YMPI_Rdma_buffer buffer, size_t offset, size_t bytes, int dest) {
     return -1;
   }
 
+  ctx->qp_pending_send_wr[dest]++;
   ctx->pending_send_wr++;
 
   return 0;
@@ -1007,7 +1020,18 @@ int YMPI_Write(YMPI_Rdma_buffer local_src, size_t offset, size_t bytes, int dest
     return -1;
   }
 
+  ctx->qp_pending_send_wr[dest]++;
   ctx->pending_send_wr++;
+  if(ctx->qp_pending_send_wr[dest] == YMPI_MAX_SEND_WR_PER_QP) {
+    int i, ne=0;
+    struct ibv_wc wc[64];
+    while(ne == 0) {
+      ne = ibv_poll_cq(ctx->cq, 64, wc);
+      for(i=0; i<ne; i++) {
+        process_wc(wc[i]);
+      }
+    }
+  }
 
   return 0;
 }
@@ -1015,7 +1039,6 @@ int YMPI_Write(YMPI_Rdma_buffer local_src, size_t offset, size_t bytes, int dest
 int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t bytes, int src, uint32_t rkey, void* src_ptr)
 {
   // LOGD("YMPI_Read(srct=%d, rkey=%u, src_ptr=%p)\n", src, rkey, src_ptr);
-  int send_flags;
   YMPID_Rdma_buffer* buffer_d = (YMPID_Rdma_buffer*) local_dst;
   assert(offset + bytes <= buffer_d->bytes);
 
@@ -1063,7 +1086,18 @@ int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t bytes, int src,
     return -1;
   }
 
+  ctx->qp_pending_send_wr[src]++;
   ctx->pending_send_wr++;
+  if(ctx->qp_pending_send_wr[src] == YMPI_MAX_SEND_WR_PER_QP) {
+    int i, ne=0;
+    struct ibv_wc wc[64];
+    while(ne == 0) {
+      ne = ibv_poll_cq(ctx->cq, 64, wc);
+      for(i=0; i<ne; i++) {
+        process_wc(wc[i]);
+      }
+    }
+  }
 
   return 0;
 }
