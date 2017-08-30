@@ -71,7 +71,7 @@ int main(void) {
 
   {
     int k;
-    LOGDS("Testing RDMA operations correctness (%d packet)...\n", RDMA_NUM_ELEM);
+    LOGDS("Testing RDMA Write correctness (%d packet)...\n", RDMA_NUM_ELEM);
     if(rank == 0) {
       YMPI_Rdma_buffer send_buffer;
       uint64_t* sb   = NULL;
@@ -128,6 +128,53 @@ int main(void) {
   }
 
   YMPI_Zflush();
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  {
+    LOGDS("Testing RDMA Read correctness (%d packet)\n", RDMA_NUM_ELEM);
+    if(rank == 0) {
+      int i;
+      YMPI_Rdma_buffer send_buffer;
+      uint64_t* sb = NULL;
+      uintptr_t sb_ptr = 0;
+      uint32_t  sb_rkey = 0;
+      YMPI_Allocate(&send_buffer, RDMA_NUM_ELEM * sizeof(uint64_t), YMPI_BUFFER_TYPE_REMOTE_ATOMIC);
+      YMPI_Get_buffer(send_buffer, &sb_ptr);
+      sb = (uint64_t*) sb_ptr;
+      memset(sb, 0, RDMA_NUM_ELEM * sizeof(uint64_t));
+      for(i=0; i<RDMA_NUM_ELEM; i++) {
+        sb[i] = 0x1111111111111111 + i;
+      }
+      YMPI_Get_rkey(send_buffer, &sb_rkey);
+      MPI_Send(&sb, 1, MPI_UNSIGNED_LONG_LONG, 1, MPI_TAG, MPI_COMM_WORLD);
+      MPI_Send(&sb_rkey, 1, MPI_UNSIGNED, 1, MPI_TAG, MPI_COMM_WORLD);
+      YMPI_Dealloc(&send_buffer);
+    } else if (rank == 1) {
+      int i;
+      YMPI_Rdma_buffer recv_buffer;
+      uint64_t* sb;
+      volatile uint64_t* rb;
+      uintptr_t rb_ptr;
+      uint32_t rkey;
+      YMPI_Allocate(&recv_buffer, RDMA_NUM_ELEM * sizeof(uint64_t), YMPI_BUFFER_TYPE_REMOTE_ATOMIC);
+      YMPI_Get_buffer(recv_buffer, &rb_ptr);
+      rb = (uint64_t*) rb_ptr;
+      MPI_Recv(&sb, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      MPI_Recv(&rkey, 1, MPI_UNSIGNED, 0, MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      LOGD("start reading:  rb=%p   rkey=%u\n", rb, rkey);
+      for(i=0; i<RDMA_NUM_ELEM; i++) {
+        LOGD("Read sb[%llu] from %d\n", i*sizeof(uint64_t), 0);
+        YMPI_Read(recv_buffer, i * sizeof(uint64_t), sizeof(uint64_t), 0, rkey, &sb[i]);
+      }
+      YMPI_Zflush();
+      for(i=0; i<RDMA_NUM_ELEM; i++) {
+        if(rb[i] != 0x1111111111111111 + i) {
+          LOGD("!!! ERROR rb[%d]    expected %llu   actual %llu\n", i, 0x1111111111111111 + i, rb[i]);
+        }
+      }
+      YMPI_Dealloc(&recv_buffer);
+    }
+  }
 
   MPI_Barrier(MPI_COMM_WORLD);
 
