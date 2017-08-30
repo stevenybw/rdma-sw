@@ -723,6 +723,52 @@ int YMPI_Finalize() {
   return 0;
 }
 
+static inline int process_wc(struct ibv_wc wc)
+{
+  size_t* buf_bytes = ctx->rx_win.buffer.buf_bytes;
+  YMPID_Vbuf_queue *pending_recv_queue = ctx->rx_win.pending_recv_queue;
+
+  YMPID_Wrid wr_id = {
+    .val = wc.wr_id,
+  };
+  if(wc.status != IBV_WC_SUCCESS) {
+    LOGD("Failed status %s (%d) for wr_id %d:%d\n", 
+      ibv_wc_status_str(wc.status), wc.status, (int) wr_id.tagid.tag, (int) wr_id.tagid.id);
+    exit(-1);
+  }
+  switch ((int) wr_id.tagid.tag) {
+    case SEND_WRID:
+    {
+      ctx->pending_send_wr--;
+      assert(ctx->pending_send_wr>=0);
+      break;
+    }
+
+    case WRITE_WRID:
+    {
+      ctx->pending_send_wr--;
+      assert(ctx->pending_send_wr>=0);
+      break;
+    }
+
+    case READ_WRID:
+    {
+      ctx->pending_send_wr--;
+      assert(ctx->pending_send_wr>=0);
+      break;
+    }
+
+    case RECV_WRID:
+    {
+      int rb_id = wr_id.tagid.id;
+      int msg_src = YMPID_Qpn_rank(wc.qp_num);
+      buf_bytes[rb_id] = wc.byte_len;
+      YMPID_Vbuf_queue_enqueue(&pending_recv_queue[msg_src], rb_id);
+      break;
+    }
+  }
+}
+
 // post the **buffer** with specific **length of bytes** to **dest**
 int YMPI_Zsend(YMPI_Rdma_buffer buffer, size_t offset, size_t bytes, int dest) {
   int send_flags;
@@ -787,10 +833,7 @@ int YMPI_Zflush() {
   int ne = 0;
   struct ibv_wc wc[64];
     
-  size_t* buf_bytes = ctx->rx_win.buffer.buf_bytes;
-  YMPID_Vbuf_queue *pending_recv_queue = ctx->rx_win.pending_recv_queue;
-
-  while(ctx->pending_send_wr > 0) {
+  while (ctx->pending_send_wr > 0) {
     ne = ibv_poll_cq(ctx->cq, 64, wc);
     if (ne < 0) {
       LOGD("pool CQ failed\n");
@@ -798,45 +841,7 @@ int YMPI_Zflush() {
     } else if (ne >= 1) {
       int i;
       for(i=0; i<ne; i++) {
-        YMPID_Wrid wr_id = {
-          .val = wc[i].wr_id,
-        };
-        if(wc[i].status != IBV_WC_SUCCESS) {
-          LOGD("Failed status %s (%d) for wr_id %d:%d\n", 
-            ibv_wc_status_str(wc[i].status), wc[i].status, (int) wr_id.tagid.tag, (int) wr_id.tagid.id);
-          exit(-1);
-        }
-        switch ((int) wr_id.tagid.tag) {
-          case SEND_WRID:
-          {
-            ctx->pending_send_wr--;
-            assert(ctx->pending_send_wr>=0);
-            break;
-          }
-
-          case WRITE_WRID:
-          {
-            ctx->pending_send_wr--;
-            assert(ctx->pending_send_wr>=0);
-            break;
-          }
-
-          case READ_WRID:
-          {
-            ctx->pending_send_wr--;
-            assert(ctx->pending_send_wr>=0);
-            break;
-          }
-
-          case RECV_WRID:
-          {
-            int rb_id = wr_id.tagid.id;
-            int msg_src = YMPID_Qpn_rank(wc[i].qp_num);
-            buf_bytes[rb_id] = wc[i].byte_len;
-            YMPID_Vbuf_queue_enqueue(&pending_recv_queue[msg_src], rb_id);
-            break;
-          }
-        }
+        process_wc(wc[i]);
       }
     }
   }
@@ -871,45 +876,7 @@ int YMPI_Zrecv(void** recv_buffer_ptr, uint64_t* recv_buffer_len_ptr, int source
     } else if (ne >= 1) {
       int i;
       for(i=0; i<ne; i++) {
-        YMPID_Wrid wr_id = {
-          .val = wc[i].wr_id,
-        };
-        if(wc[i].status != IBV_WC_SUCCESS) {
-          LOGD("Failed status %s (%d) for wr_id %d:%d\n", 
-            ibv_wc_status_str(wc[i].status), wc[i].status, (int) wr_id.tagid.tag, (int) wr_id.tagid.id);
-          exit(-1);
-        }
-        switch ((int) wr_id.tagid.tag) {
-          case SEND_WRID:
-          {
-            ctx->pending_send_wr--;
-            assert(ctx->pending_send_wr>=0);
-            break;
-          }
-
-          case WRITE_WRID:
-          {
-            ctx->pending_send_wr--;
-            assert(ctx->pending_send_wr>=0);
-            break;
-          }
-
-          case READ_WRID:
-          {
-            ctx->pending_send_wr--;
-            assert(ctx->pending_send_wr>=0);
-            break;
-          }
-
-          case RECV_WRID:
-          {
-            int rb_id = wr_id.tagid.id;
-            int msg_src = YMPID_Qpn_rank(wc[i].qp_num);
-            buf_bytes[rb_id] = wc[i].byte_len;
-            YMPID_Vbuf_queue_enqueue(&pending_recv_queue[msg_src], rb_id);
-            break;
-          }
-        }
+        process_wc(wc[i]);
       }
     }
   }
