@@ -146,8 +146,10 @@ int main(void) {
         sb[i] = 0x1111111111111111 + i;
       }
       YMPI_Get_rkey(send_buffer, &sb_rkey);
+      LOGD("sb=%p  sb_rkey=%u\n", sb, sb_rkey);
       MPI_Send(&sb, 1, MPI_UNSIGNED_LONG_LONG, 1, MPI_TAG, MPI_COMM_WORLD);
       MPI_Send(&sb_rkey, 1, MPI_UNSIGNED, 1, MPI_TAG, MPI_COMM_WORLD);
+      MPI_Barrier(MPI_COMM_WORLD);
       YMPI_Dealloc(&send_buffer);
     } else if (rank == 1) {
       int i;
@@ -161,7 +163,7 @@ int main(void) {
       rb = (uint64_t*) rb_ptr;
       MPI_Recv(&sb, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
       MPI_Recv(&rkey, 1, MPI_UNSIGNED, 0, MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-      LOGD("start reading:  rb=%p   rkey=%u\n", rb, rkey);
+      LOGD("start reading:  sb=%p   rkey=%u\n", sb, rkey);
       for(i=0; i<RDMA_NUM_ELEM; i++) {
         LOGD("Read sb[%llu] from %d\n", i*sizeof(uint64_t), 0);
         YMPI_Read(recv_buffer, i * sizeof(uint64_t), sizeof(uint64_t), 0, rkey, &sb[i]);
@@ -172,6 +174,7 @@ int main(void) {
           LOGD("!!! ERROR rb[%d]    expected %llu   actual %llu\n", i, 0x1111111111111111 + i, rb[i]);
         }
       }
+      MPI_Barrier(MPI_COMM_WORLD);
       YMPI_Dealloc(&recv_buffer);
     }
   }

@@ -1052,12 +1052,6 @@ int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t bytes, int src,
   YMPID_Rdma_buffer* buffer_d = (YMPID_Rdma_buffer*) local_dst;
   assert(offset + bytes <= buffer_d->bytes);
 
-  if (bytes < ctx->max_inline_data) {
-    send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
-  } else {
-    send_flags = IBV_SEND_SIGNALED;
-  }
-
   YMPID_Wrid wr_id = {
     .tagid = {
       .tag = READ_WRID,
@@ -1077,7 +1071,7 @@ int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t bytes, int src,
     .sg_list       = &sge,
     .num_sge       = 1,
     .opcode        = IBV_WR_RDMA_READ,
-    .send_flags    = send_flags,
+    .send_flags    = IBV_SEND_SIGNALED,
     .wr.rdma.remote_addr = (uint64_t) src_ptr,
     .wr.rdma.rkey        = rkey,
   };
