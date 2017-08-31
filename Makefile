@@ -16,7 +16,7 @@ else
   # LDLIBS  := -hybrid ${LDLIBS} -DCONFIG_SWIB -L/usr/sw-mpp/lib /usr/sw-mpp/mpi2/lib/__slave_dma.o -L/usr/sw-mpp/mpi2/lib -lmpi -lswtm -libverbs_wd -Wl,-zmuldefs -lrt -ldl -lpthread -lm -los_master_isp
 endif
 
-TARGET := benchmark/ympi_latency benchmark/ympi_fan benchmark/ympi_allputall test/test_ympi
+TARGET := benchmark/ympi_latency benchmark/ympi_fan benchmark/ympi_allputall benchmark/inbound_outbound_assymetry test/test_ympi
 
 all: $(TARGET)
 
@@ -55,6 +55,9 @@ benchmark/ympi_fan: benchmark/ympi_fan.c src/ympi.c include/ympi.h include/commo
 
 benchmark/ympi_allputall: benchmark/ympi_allputall.c src/ympi.c include/ympi.h include/common.h
 	$(MPICC) $(CFLAGS) $(LDFLAGS) -o benchmark/ympi_allputall -I/usr/sw-mpp/include -Iinclude benchmark/ympi_allputall.c src/ympi.c
+
+benchmark/inbound_outbound_assymetry: benchmark/inbound_outbound_assymetry.c  src/ympi.c include/ympi.h include/common.h
+	$(MPICC) $(CFLAGS) $(LDFLAGS) -o benchmark/inbound_outbound_assymetry -I/usr/sw-mpp/include -Iinclude benchmark/inbound_outbound_assymetry.c src/ympi.c
 
 clean:
 	rm -f $(TARGET)
