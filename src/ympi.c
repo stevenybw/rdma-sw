@@ -14,6 +14,12 @@
 #include "ympi.h"
 #include "linkedlist.h"
 
+#ifdef YMPI_ARCH_X86_64
+// WARNING: 6.383024 -> 5.753626 if replace to atomic inc
+#define ATOMIC_INC(VARIABLE) __sync_add_and_fetch(&VARIABLE, 1)
+#define ATOMIC_DEC(VARIABLE) __sync_add_and_fetch(&VARIABLE, -1)
+#endif
+
 typedef struct YMPID_Rdma_buffer {
   int             buffer_type;
   void           *buf;
@@ -744,27 +750,27 @@ static inline int process_wc(struct ibv_wc wc)
     case SEND_WRID:
     {
       int qp_id = wr_id.tagid.id;
-      ctx->qp_pending_send_wr[qp_id]--;
-      ctx->pending_send_wr--;
-      assert(ctx->qp_pending_send_wr[qp_id]>=0);
+      int qp_send_wr = ATOMIC_DEC(ctx->qp_pending_send_wr[qp_id]);
+      ATOMIC_DEC(ctx->pending_send_wr);
+      assert(qp_send_wr >= 0);
       break;
     }
 
     case WRITE_WRID:
     {
       int qp_id = wr_id.tagid.id;
-      ctx->qp_pending_send_wr[qp_id]--;
-      ctx->pending_send_wr--;
-      assert(ctx->qp_pending_send_wr[qp_id]>=0);
+      int qp_send_wr = ATOMIC_DEC(ctx->qp_pending_send_wr[qp_id]);
+      ATOMIC_DEC(ctx->pending_send_wr);
+      assert(qp_send_wr >= 0);
       break;
     }
 
     case READ_WRID:
     {
       int qp_id = wr_id.tagid.id;
-      ctx->qp_pending_send_wr[qp_id]--;
-      ctx->pending_send_wr--;
-      assert(ctx->qp_pending_send_wr[qp_id]>=0);
+      int qp_send_wr = ATOMIC_DEC(ctx->qp_pending_send_wr[qp_id]);
+      ATOMIC_DEC(ctx->pending_send_wr);
+      assert(qp_send_wr >= 0);
       break;
     }
 
@@ -835,8 +841,18 @@ int YMPI_Zsend(YMPI_Rdma_buffer buffer, size_t offset, size_t bytes, int dest) {
     return -1;
   }
 
-  ctx->qp_pending_send_wr[dest]++;
-  ctx->pending_send_wr++;
+  int qp_send_wr = ATOMIC_INC(ctx->qp_pending_send_wr[dest]);
+  ATOMIC_INC(ctx->pending_send_wr);
+  if(qp_send_wr == YMPI_MAX_SEND_WR_PER_QP) {
+    int i, ne=0;
+    struct ibv_wc wc[64];
+    while(ne == 0) {
+      ne = ibv_poll_cq(ctx->cq, 64, wc);
+      for(i=0; i<ne; i++) {
+        process_wc(wc[i]);
+      }
+    }
+  }
 
   return 0;
 }
@@ -1020,9 +1036,9 @@ int YMPI_Write(YMPI_Rdma_buffer local_src, size_t offset, size_t bytes, int dest
     return -1;
   }
 
-  ctx->qp_pending_send_wr[dest]++;
-  ctx->pending_send_wr++;
-  if(ctx->qp_pending_send_wr[dest] == YMPI_MAX_SEND_WR_PER_QP) {
+  int qp_send_wr = ATOMIC_INC(ctx->qp_pending_send_wr[dest]);
+  ATOMIC_INC(ctx->pending_send_wr);
+  if(qp_send_wr == YMPI_MAX_SEND_WR_PER_QP) {
     int i, ne=0;
     struct ibv_wc wc[64];
     while(ne == 0) {
@@ -1086,9 +1102,9 @@ int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t bytes, int src,
     return -1;
   }
 
-  ctx->qp_pending_send_wr[src]++;
-  ctx->pending_send_wr++;
-  if(ctx->qp_pending_send_wr[src] == YMPI_MAX_SEND_WR_PER_QP) {
+  int qp_send_wr = ATOMIC_INC(ctx->qp_pending_send_wr[src]);
+  ATOMIC_INC(ctx->pending_send_wr);
+  if(qp_send_wr == YMPI_MAX_SEND_WR_PER_QP) {
     int i, ne=0;
     struct ibv_wc wc[64];
     while(ne == 0) {
