@@ -98,14 +98,16 @@ main (int argc, char *argv[])
         for (i=0; i < options.iterations + options.skip ; i++) {
             t_start = MPI_Wtime();
             int dst;
-            for(dst = rank+1; dst != rank; dst = (dst+1)%numprocs) {
+            for(dst = (rank+1)%numprocs; dst != rank; dst = (dst+1)%numprocs) {
                 YMPI_Zsend(sendbuffer, dst*size, size, dst);
             }
-            for(dst = rank+1; dst != rank; dst = (dst+1)%numprocs) {
+            for(dst = (rank+1)%numprocs; dst != rank; dst = (dst+1)%numprocs) {
                 void* ptr;
                 uint64_t len;
                 YMPI_Zrecv(&ptr, &len, dst);
             }
+            YMPI_Zflush();
+            YMPI_Return();
 
             //MPI_Alltoall(sendbuf, size, MPI_CHAR, recvbuf, size, MPI_CHAR, MPI_COMM_WORLD);
             t_stop = MPI_Wtime();
