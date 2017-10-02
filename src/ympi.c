@@ -14,10 +14,33 @@
 #include "ympi.h"
 #include "linkedlist.h"
 
-#ifdef YMPI_ARCH_X86_64
+/* ATOMIC_PENDING_SEND_WR
+ We need a variable called pending_send_wr to keep track on
+ the number of unsettled sending operations. However, atmic
+ operation may harm the performance.
+ */
+#define ATOMIC_PENDING_SEND_WR 0
+
+#if defined(YMPI_ARCH_X86_64)
+
+#if ATOMIC_PENDING_SEND_WR
 // WARNING: 6.383024 -> 5.753626 if replace to atomic inc
 #define ATOMIC_INC(VARIABLE) __sync_add_and_fetch(&VARIABLE, 1)
 #define ATOMIC_DEC(VARIABLE) __sync_add_and_fetch(&VARIABLE, -1)
+#else
+#define ATOMIC_INC(VARIABLE) (++VARIABLE)
+#define ATOMIC_DEC(VARIABLE) (--VARIABLE)
+#endif
+
+#elif defined(YMPI_ARCH_SW)
+
+#if ATOMIC_PENDING_SEND_WR
+
+#else
+#define ATOMIC_INC(VARIABLE) (++VARIABLE)
+#define ATOMIC_DEC(VARIABLE) (--VARIABLE)
+#endif
+
 #endif
 
 typedef struct YMPID_Rdma_buffer {
@@ -81,14 +104,14 @@ typedef struct YMPID_Context {
   int      pending_send_wr;
   uint32_t max_inline_data;
 
-#if YMPI_SW
+#if YMPI_ARCH_SW
   int      cgid;
 #endif
 } YMPID_Context;
 
 static YMPID_Context *ctx;
 
-#if YMPI_SW
+#if YMPI_ARCH_SW
 
 extern long sys_m_cgid();
 
@@ -127,7 +150,7 @@ static inline int YMPID_Qpn_rank(int qpn) {
   return rank;
 }
 
-#endif //YMPI_SW
+#endif //YMPI_ARCH_SW
 
 static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_port, int rank, int nprocs, int *target_rank_list)
 {
@@ -142,7 +165,7 @@ static YMPID_Context* YMPID_Context_create(struct ibv_device *ib_dev, int ib_por
   memset(ctx->qp_pending_send_wr, 0, nprocs * sizeof(int));
   ctx->pending_send_wr  = 0;
 
-#if YMPI_SW
+#if YMPI_ARCH_SW
   int cgid         = sys_m_cgid();
   assert(cgid < 4);
   ctx->cgid        = cgid;
@@ -752,7 +775,7 @@ static inline int process_wc(struct ibv_wc wc)
       int qp_id = wr_id.tagid.id;
       int qp_send_wr = ATOMIC_DEC(ctx->qp_pending_send_wr[qp_id]);
       ATOMIC_DEC(ctx->pending_send_wr);
-      assert(qp_send_wr >= 0);
+      //assert(qp_send_wr >= 0);
       break;
     }
 
@@ -761,7 +784,7 @@ static inline int process_wc(struct ibv_wc wc)
       int qp_id = wr_id.tagid.id;
       int qp_send_wr = ATOMIC_DEC(ctx->qp_pending_send_wr[qp_id]);
       ATOMIC_DEC(ctx->pending_send_wr);
-      assert(qp_send_wr >= 0);
+      //assert(qp_send_wr >= 0);
       break;
     }
 
@@ -770,7 +793,7 @@ static inline int process_wc(struct ibv_wc wc)
       int qp_id = wr_id.tagid.id;
       int qp_send_wr = ATOMIC_DEC(ctx->qp_pending_send_wr[qp_id]);
       ATOMIC_DEC(ctx->pending_send_wr);
-      assert(qp_send_wr >= 0);
+      //assert(qp_send_wr >= 0);
       break;
     }
 

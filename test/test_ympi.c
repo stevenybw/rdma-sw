@@ -136,7 +136,154 @@ int main(void) {
       }
     }
   }
+  YMPI_Zflush();
+  MPI_Barrier(MPI_COMM_WORLD);
 
+  {
+    /* Batched RDMA
+       By Batched RDMA, we mean that multiple RDMA operations are
+       issued before waiting for completion
+     */
+    int total_io = 8*1024*1024;
+    int batch_size = 4;
+    int j,k;
+    LOGDS("Testing Batched RDMA Write correctness (%d packet, batch_size=%d)...\n", total_io, batch_size);
+    if(rank == 0) {
+      YMPI_Rdma_buffer send_buffer;
+      uint64_t* sb   = NULL;
+      uint32_t  rkey = 0;
+      uint64_t* rb   = NULL;
+      uintptr_t sb_ptr = 0;
+      YMPI_Allocate(&send_buffer, total_io * sizeof(int64_t), YMPI_BUFFER_TYPE_REMOTE_ATOMIC);
+      YMPI_Get_buffer(send_buffer, &sb_ptr);
+      sb = (uint64_t*) sb_ptr;
+      MPI_Recv(&rb, 1, MPI_UNSIGNED_LONG_LONG, 1, MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      MPI_Recv(&rkey, 1, MPI_UNSIGNED, 1, MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      assert(sb != NULL);
+      assert(rb != NULL);
+
+      uint64_t* sig = &rb[0];
+      rb = &rb[YMPI_PAGE_SIZE / sizeof(int64_t)];
+      for(i=0; i<total_io; i++) {
+        sb[i] = 0x1111111111111111 + i;
+      }
+      double wsec = -MPI_Wtime();
+      for(i=0; i<total_io; i+=batch_size) {
+        for(j=i; j<(i+batch_size); j++) {
+          YMPI_Write(send_buffer, j * sizeof(uint64_t), sizeof(uint64_t), 1, rkey, &rb[j]);
+        }
+        YMPI_Zflush();
+      }
+      wsec += MPI_Wtime();
+      LOGD("  time=%lf us,  msg_rate=%lf Mmesg/s\n", wsec, 1e-6 * total_io / wsec);
+      YMPI_Write(send_buffer, 0, sizeof(uint64_t), 1, rkey, sig);
+      YMPI_Dealloc(&send_buffer);
+    } else if(rank == 1) {
+      YMPI_Rdma_buffer recv_buffer;
+      uint32_t  rkey = 0;
+      uint64_t* rb = NULL;
+      uintptr_t rb_ptr = 0;
+      YMPI_Allocate(&recv_buffer, YMPI_PAGE_SIZE + total_io * sizeof(int64_t), YMPI_BUFFER_TYPE_REMOTE_ATOMIC);
+      YMPI_Get_buffer(recv_buffer, &rb_ptr);
+      YMPI_Get_rkey(recv_buffer, &rkey);
+      rb = (uint64_t*) rb_ptr;
+      memset(rb, 0, YMPI_PAGE_SIZE + total_io * sizeof(int64_t));
+      MPI_Send(&rb, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_TAG, MPI_COMM_WORLD);
+      MPI_Send(&rkey, 1, MPI_UNSIGNED, 0, MPI_TAG, MPI_COMM_WORLD);
+      volatile uint64_t* sig = &rb[0];
+      LOGD("  wait for synchronization message at sig=%p\n", sig);
+      {
+        while(*sig == 0);
+      }
+      LOGD("  reveived signal %llu\n", *sig);
+      rb = &rb[YMPI_PAGE_SIZE / sizeof(int64_t)];
+      int err = 0;
+
+      for(i=0; i<RDMA_NUM_ELEM; i++) {
+        if(rb[i] != 0x1111111111111111 + i) {
+          printf("!!! ERROR at rb[%d]:  expected %llu   actual %llu\n", i, 0x1111111111111111 + i, rb[i]);
+          err = 1;
+        }
+      }
+      if(err) {
+        assert(0);
+      } else {
+        LOGD("  CORRECTNESS PASSED...\n");
+      }
+    }
+  }
+  YMPI_Zflush();
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  {
+    int total_io = 8*1024*1024;
+    int batch_size = 8;
+    int j,k;
+    LOGDS("Testing Batched RDMA Write correctness (%d packet, batch_size=%d)...\n", total_io, batch_size);
+    if(rank == 0) {
+      YMPI_Rdma_buffer send_buffer;
+      uint64_t* sb   = NULL;
+      uint32_t  rkey = 0;
+      uint64_t* rb   = NULL;
+      uintptr_t sb_ptr = 0;
+      YMPI_Allocate(&send_buffer, total_io * sizeof(int64_t), YMPI_BUFFER_TYPE_REMOTE_ATOMIC);
+      YMPI_Get_buffer(send_buffer, &sb_ptr);
+      sb = (uint64_t*) sb_ptr;
+      MPI_Recv(&rb, 1, MPI_UNSIGNED_LONG_LONG, 1, MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      MPI_Recv(&rkey, 1, MPI_UNSIGNED, 1, MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      assert(sb != NULL);
+      assert(rb != NULL);
+
+      uint64_t* sig = &rb[0];
+      rb = &rb[YMPI_PAGE_SIZE / sizeof(int64_t)];
+      for(i=0; i<total_io; i++) {
+        sb[i] = 0x1111111111111111 + i;
+      }
+      double wsec = -MPI_Wtime();
+      for(i=0; i<total_io; i+=batch_size) {
+        for(j=i; j<(i+batch_size); j++) {
+          YMPI_Write(send_buffer, j * sizeof(uint64_t), sizeof(uint64_t), 1, rkey, &rb[j]);
+        }
+        YMPI_Zflush();
+      }
+      wsec += MPI_Wtime();
+      LOGD("  time=%lf us,  msg_rate=%lf Mmesg/s\n", wsec, 1e-6 * total_io / wsec);
+      YMPI_Write(send_buffer, 0, sizeof(uint64_t), 1, rkey, sig);
+      YMPI_Dealloc(&send_buffer);
+    } else if(rank == 1) {
+      YMPI_Rdma_buffer recv_buffer;
+      uint32_t  rkey = 0;
+      uint64_t* rb = NULL;
+      uintptr_t rb_ptr = 0;
+      YMPI_Allocate(&recv_buffer, YMPI_PAGE_SIZE + total_io * sizeof(int64_t), YMPI_BUFFER_TYPE_REMOTE_ATOMIC);
+      YMPI_Get_buffer(recv_buffer, &rb_ptr);
+      YMPI_Get_rkey(recv_buffer, &rkey);
+      rb = (uint64_t*) rb_ptr;
+      memset(rb, 0, YMPI_PAGE_SIZE + total_io * sizeof(int64_t));
+      MPI_Send(&rb, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_TAG, MPI_COMM_WORLD);
+      MPI_Send(&rkey, 1, MPI_UNSIGNED, 0, MPI_TAG, MPI_COMM_WORLD);
+      volatile uint64_t* sig = &rb[0];
+      LOGD("  wait for synchronization message at sig=%p\n", sig);
+      {
+        while(*sig == 0);
+      }
+      LOGD("  reveived signal %llu\n", *sig);
+      rb = &rb[YMPI_PAGE_SIZE / sizeof(int64_t)];
+      int err = 0;
+
+      for(i=0; i<RDMA_NUM_ELEM; i++) {
+        if(rb[i] != 0x1111111111111111 + i) {
+          printf("!!! ERROR at rb[%d]:  expected %llu   actual %llu\n", i, 0x1111111111111111 + i, rb[i]);
+          err = 1;
+        }
+      }
+      if(err) {
+        assert(0);
+      } else {
+        LOGD("  CORRECTNESS PASSED...\n");
+      }
+    }
+  }
   YMPI_Zflush();
   MPI_Barrier(MPI_COMM_WORLD);
 
