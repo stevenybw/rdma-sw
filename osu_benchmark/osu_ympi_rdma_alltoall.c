@@ -10,6 +10,7 @@
  */
 #include "osu_coll.h"
 #include "ympi.h"
+#include <assert.h>
 
 void* rbuf[1024];
 uint32_t rkey[1024];
@@ -105,13 +106,7 @@ main (int argc, char *argv[])
 
         for (i=0; i < options.iterations + options.skip ; i++) {
             t_start = MPI_Wtime();
-            int dst;
-            for(dst = (rank+1)%numprocs; dst != rank; dst = (dst+1)%numprocs) {
-                YMPI_Write(sendbuffer, dst*size, size, dst, rkey[dst], rbuf[dst]);
-            }
-            YMPI_Zflush();
-            MPI_Barrier(MPI_COMM_WORLD);
-
+            YMPI_Alltoall_write(sendbuffer, size, recvbuffer, size, MPI_COMM_WORLD);
             //MPI_Alltoall(sendbuf, size, MPI_CHAR, recvbuf, size, MPI_CHAR, MPI_COMM_WORLD);
             t_stop = MPI_Wtime();
 
@@ -132,6 +127,16 @@ main (int argc, char *argv[])
 
         print_stats(rank, size, avg_time, min_time, max_time);
         MPI_Barrier(MPI_COMM_WORLD);
+
+        {
+            int i;
+            for(i=0; i<size; i++) {
+                assert(sendbuf[i] == 1);
+                if(recvbuf[i] != 1) {
+                    printf("Expected recvbuf[i] == 1, but equal to %d\n", (int)recvbuf[i]);
+                }
+            }
+        }
     }
 
     free_buffer(sendbuf, options.accel);

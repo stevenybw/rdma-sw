@@ -1140,3 +1140,64 @@ int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t bytes, int src,
 
   return 0;
 }
+
+#define MAX_NPROCS 65536
+
+static int _first_call = 1;
+static YMPI_Rdma_buffer _last_send;
+static YMPI_Rdma_buffer _last_recv;
+static MPI_Comm         _last_comm;
+static void* _recv_rbuf_list[MAX_NPROCS];
+static int   _recv_rkey_list[MAX_NPROCS];
+static int   _alltoall_world_ranks[MAX_NPROCS];
+
+
+int YMPI_Alltoall_write(YMPI_Rdma_buffer sendbuffer, uint64_t sendsize, YMPI_Rdma_buffer recvbuffer, uint64_t recvsize, MPI_Comm comm)
+{
+  int rank, numprocs;
+  MPI_Comm_rank(comm, &rank);
+  MPI_Comm_size(comm, &numprocs);
+
+  char*    sendbuf = NULL;
+  char*    recvbuf = NULL;
+  YMPI_Get_buffer(sendbuffer, &sendbuf);
+  YMPI_Get_buffer(recvbuffer, &recvbuf);
+
+
+  //if(rank == 0) {
+  //  printf("Calling YMPI_Alltoall_write\n");
+  //}
+  if (_first_call) {
+    _first_call = 0;
+    _last_send = sendbuffer;
+    _last_recv = recvbuffer;
+    _last_comm = comm;
+
+    {
+      int my_worldrank;
+      MPI_Comm_rank(MPI_COMM_WORLD, &my_worldrank);
+      uint32_t my_rkey;
+      YMPI_Get_rkey(recvbuffer, &my_rkey);    
+      assert(recvbuf);
+      MPI_Allgather(&my_rkey, 1, MPI_INT, _recv_rkey_list, 1, MPI_INT, comm);
+      MPI_Allgather(&recvbuf, 1, MPI_UNSIGNED_LONG_LONG, _recv_rbuf_list, 1, MPI_UNSIGNED_LONG_LONG, comm);
+      MPI_Allgather(&my_worldrank, 1, MPI_INT, _alltoall_world_ranks, 1, MPI_INT, comm);
+    }
+  } else {
+    assert(_last_send == sendbuffer);
+    assert(_last_recv == recvbuffer);
+    assert(_last_comm == comm);
+  }
+  assert(sendsize == recvsize);
+
+  int dst;
+  for(dst = (rank+1)%numprocs; dst != rank; dst = (dst+1)%numprocs) {
+    char* dest = ((char*)_recv_rbuf_list[dst]) + rank*recvsize;
+    YMPI_Write(sendbuffer, dst*sendsize, sendsize, _alltoall_world_ranks[dst], _recv_rkey_list[dst], (void*) dest);
+  }
+  memcpy(&recvbuf[rank*recvsize], &sendbuf[rank*sendsize], sendsize);
+  YMPI_Zflush();
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  return 0;
+}

@@ -66,5 +66,10 @@ int YMPI_Return();
 int YMPI_Write(YMPI_Rdma_buffer local_src, size_t offset, size_t bytes, int dest, uint32_t rkey, void* dest_ptr);
 int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t bytes, int src, uint32_t rkey, void* src_ptr);
 
+/* Part Three: Collective Operations */
+
+// YMPI_Write-based alltoall
+int YMPI_Alltoall_write(YMPI_Rdma_buffer sendbuffer, uint64_t sendsize, YMPI_Rdma_buffer recvbuffer, uint64_t recvsize, MPI_Comm comm);
+
 #endif
 
