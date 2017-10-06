@@ -7,8 +7,8 @@
 
 /* The transmission bytes must not exceed YMPI_VBUF_BYTES */
 #define YMPI_VBUF_BYTES         (2*1024*1024)
-#define YMPI_PREPOST_DEPTH      (128)
-#define YMPI_MAX_SEND_WR_PER_QP (64)
+#define YMPI_PREPOST_DEPTH      (256)
+#define YMPI_MAX_SEND_WR_PER_QP (256)
 #define YMPI_QPN_HASH_SIZE      (1024*1024)
 
 // affect pending receive linked list for each process

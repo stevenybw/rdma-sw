@@ -11,6 +11,9 @@
 #include "osu_coll.h"
 #include "ympi.h"
 
+void* rbuf[1024];
+uint32_t rkey[1024];
+
 int
 main (int argc, char *argv[])
 {
@@ -74,13 +77,19 @@ main (int argc, char *argv[])
     bufsize = options.max_message_size * numprocs;
 
     {
-        YMPI_Alloc(&sendbuffer, bufsize);
+        YMPI_Allocate(&sendbuffer, bufsize, YMPI_BUFFER_TYPE_REMOTE_RW);
         YMPI_Get_buffer(sendbuffer, &sendbuf);
         set_buffer(sendbuf, options.accel, 1, bufsize);
 
-        YMPI_Alloc(&recvbuffer, bufsize);
+        YMPI_Allocate(&recvbuffer, bufsize, YMPI_BUFFER_TYPE_REMOTE_RW);
         YMPI_Get_buffer(recvbuffer, &recvbuf);
         set_buffer(recvbuf, options.accel, 0, bufsize);
+
+        uint32_t my_rkey;
+        YMPI_Get_rkey(recvbuffer, &my_rkey);
+        
+        MPI_Allgather(&my_rkey, 1, MPI_INT, rkey, 1, MPI_INT, MPI_COMM_WORLD);
+        MPI_Allgather(&recvbuf, 1, MPI_UNSIGNED_LONG_LONG, rbuf, 1, MPI_UNSIGNED_LONG_LONG, MPI_COMM_WORLD);
     }
 
     print_preamble(rank);
@@ -98,16 +107,10 @@ main (int argc, char *argv[])
             t_start = MPI_Wtime();
             int dst;
             for(dst = (rank+1)%numprocs; dst != rank; dst = (dst+1)%numprocs) {
-                YMPI_Zsend(sendbuffer, dst*size, size, dst);
-            }
-            for(dst = (rank+1)%numprocs; dst != rank; dst = (dst+1)%numprocs) {
-                void* ptr;
-                uint64_t len;
-                YMPI_Zrecv(&ptr, &len, dst);
-                // memcpy(&recvbuf[dst*size], ptr, size);
+                YMPI_Write(sendbuffer, dst*size, size, dst, rkey[dst], rbuf[dst]);
             }
             YMPI_Zflush();
-            YMPI_Return();
+            MPI_Barrier(MPI_COMM_WORLD);
 
             //MPI_Alltoall(sendbuf, size, MPI_CHAR, recvbuf, size, MPI_CHAR, MPI_COMM_WORLD);
             t_stop = MPI_Wtime();

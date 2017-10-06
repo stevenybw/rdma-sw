@@ -59,6 +59,9 @@ benchmark/ympi_allputall: benchmark/ympi_allputall.c src/ympi.c include/ympi.h i
 osu_ympi_zalltoall: osu_benchmark/osu_ympi_zalltoall.c osu_benchmark/osu_coll.c osu_benchmark/osu_coll.h src/ympi.c include/ympi.h include/common.h
 	$(MPICC) $(CFLAGS) $(LDFLAGS) -o osu_ympi_zalltoall -I/usr/sw-mpp/include -Iinclude -Iosu_benchmark osu_benchmark/osu_ympi_zalltoall.c osu_benchmark/osu_coll.c src/ympi.c
 
+osu_ympi_rdma_alltoall: osu_benchmark/osu_ympi_rdma_alltoall.c osu_benchmark/osu_coll.c osu_benchmark/osu_coll.h src/ympi.c include/ympi.h include/common.h
+	$(MPICC) $(CFLAGS) $(LDFLAGS) -o osu_ympi_rdma_alltoall -I/usr/sw-mpp/include -Iinclude -Iosu_benchmark osu_benchmark/osu_ympi_rdma_alltoall.c osu_benchmark/osu_coll.c src/ympi.c
+
 benchmark/inbound_outbound_assymetry: benchmark/inbound_outbound_assymetry.c  src/ympi.c include/ympi.h include/common.h
 	$(MPICC) $(CFLAGS) $(LDFLAGS) -o benchmark/inbound_outbound_assymetry -I/usr/sw-mpp/include -Iinclude benchmark/inbound_outbound_assymetry.c src/ympi.c
 

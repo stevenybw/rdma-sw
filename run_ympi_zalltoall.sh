@@ -22,5 +22,7 @@ export MV2_VBUF_TOTAL_SIZE=524288
 #export MV2_VBUF_SECONDARY_POOL_SIZE='2048'
 #export MV2_USE_MSG_OPT='0'
 
+NP=256
+
 mkdir -p rst
-bsub -n 64 -np 4 -cgsp 64 -q q_sw_expr -share_size 6000 -cross_size 1000 -b -p -J heng_s4.kron4 -I ./osu_ympi_zalltoall -f -m 1048576 2>&1 | tee rst/osu_ympi_zalltoall.txt
+bsub -n $NP -np 4 -cgsp 64 -q q_sw_share -share_size 7000 -cross_size 100 -b -p -J heng_s4.kron4 -I ./osu_ympi_zalltoall -f -i 10 -m 1048576 2>&1 | tee rst/osu_ympi_zalltoall_${NP}_`date +%y%m%d%H%M%S`.txt
