@@ -70,6 +70,7 @@ int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t bytes, int src,
 
 // YMPI_Write-based alltoall
 int YMPI_Alltoall_write(YMPI_Rdma_buffer sendbuffer, uint64_t sendsize, YMPI_Rdma_buffer recvbuffer, uint64_t recvsize, MPI_Comm comm);
+int YMPI_Alltoall_write_ptr(char* sendbuf, uint64_t sendsize, char* recvbuf, uint64_t recvsize, MPI_Comm comm);
 
 #endif
 

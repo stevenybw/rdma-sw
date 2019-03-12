@@ -78,19 +78,26 @@ main (int argc, char *argv[])
     bufsize = options.max_message_size * numprocs;
 
     {
-        YMPI_Allocate(&sendbuffer, bufsize, YMPI_BUFFER_TYPE_REMOTE_RW);
-        YMPI_Get_buffer(sendbuffer, &sendbuf);
+        /*
+            YMPI_Allocate(&sendbuffer, bufsize, YMPI_BUFFER_TYPE_REMOTE_RW);
+            YMPI_Get_buffer(sendbuffer, &sendbuf);
+            set_buffer(sendbuf, options.accel, 1, bufsize);
+
+            YMPI_Allocate(&recvbuffer, bufsize, YMPI_BUFFER_TYPE_REMOTE_RW);
+            YMPI_Get_buffer(recvbuffer, &recvbuf);
+            set_buffer(recvbuf, options.accel, 0, bufsize);
+
+            uint32_t my_rkey;
+            YMPI_Get_rkey(recvbuffer, &my_rkey);
+            
+            MPI_Allgather(&my_rkey, 1, MPI_INT, rkey, 1, MPI_INT, MPI_COMM_WORLD);
+            MPI_Allgather(&recvbuf, 1, MPI_UNSIGNED_LONG_LONG, rbuf, 1, MPI_UNSIGNED_LONG_LONG, MPI_COMM_WORLD);
+        */
+
+        sendbuf = malloc(bufsize);
+        recvbuf = malloc(bufsize);
         set_buffer(sendbuf, options.accel, 1, bufsize);
-
-        YMPI_Allocate(&recvbuffer, bufsize, YMPI_BUFFER_TYPE_REMOTE_RW);
-        YMPI_Get_buffer(recvbuffer, &recvbuf);
         set_buffer(recvbuf, options.accel, 0, bufsize);
-
-        uint32_t my_rkey;
-        YMPI_Get_rkey(recvbuffer, &my_rkey);
-        
-        MPI_Allgather(&my_rkey, 1, MPI_INT, rkey, 1, MPI_INT, MPI_COMM_WORLD);
-        MPI_Allgather(&recvbuf, 1, MPI_UNSIGNED_LONG_LONG, rbuf, 1, MPI_UNSIGNED_LONG_LONG, MPI_COMM_WORLD);
     }
 
     print_preamble(rank);
@@ -106,7 +113,8 @@ main (int argc, char *argv[])
 
         for (i=0; i < options.iterations + options.skip ; i++) {
             t_start = MPI_Wtime();
-            YMPI_Alltoall_write(sendbuffer, size, recvbuffer, size, MPI_COMM_WORLD);
+            YMPI_Alltoall_write_ptr(sendbuf, size, recvbuf, size, MPI_COMM_WORLD);
+            //YMPI_Alltoall_write(sendbuffer, size, recvbuffer, size, MPI_COMM_WORLD);
             //MPI_Alltoall(sendbuf, size, MPI_CHAR, recvbuf, size, MPI_CHAR, MPI_COMM_WORLD);
             t_stop = MPI_Wtime();
 

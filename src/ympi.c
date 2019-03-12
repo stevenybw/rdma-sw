@@ -1144,6 +1144,8 @@ int YMPI_Read (YMPI_Rdma_buffer local_dst, size_t offset, size_t bytes, int src,
 #define MAX_NPROCS 65536
 
 static int _first_call = 1;
+static void* _last_sendbuf = NULL;
+static void* _last_recvbuf = NULL;
 static YMPI_Rdma_buffer _last_send;
 static YMPI_Rdma_buffer _last_recv;
 static MPI_Comm         _last_comm;
@@ -1187,6 +1189,97 @@ int YMPI_Alltoall_write(YMPI_Rdma_buffer sendbuffer, uint64_t sendsize, YMPI_Rdm
     assert(_last_send == sendbuffer);
     assert(_last_recv == recvbuffer);
     assert(_last_comm == comm);
+  }
+  assert(sendsize == recvsize);
+
+  int dst;
+  for(dst = (rank+1)%numprocs; dst != rank; dst = (dst+1)%numprocs) {
+    char* dest = ((char*)_recv_rbuf_list[dst]) + rank*recvsize;
+    YMPI_Write(sendbuffer, dst*sendsize, sendsize, _alltoall_world_ranks[dst], _recv_rkey_list[dst], (void*) dest);
+  }
+  memcpy(&recvbuf[rank*recvsize], &sendbuf[rank*sendsize], sendsize);
+  YMPI_Zflush();
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  return 0;
+}
+
+static int YMPID_Register(void* buf, YMPI_Rdma_buffer* buffer, size_t bytes, int buffer_type) {
+  YMPID_Rdma_buffer *buffer_d = NULL;
+  int access_flags;
+  switch(buffer_type)
+  {
+    case YMPI_BUFFER_TYPE_LOCAL:
+      access_flags = IBV_ACCESS_LOCAL_WRITE;
+      break;
+    case YMPI_BUFFER_TYPE_REMOTE_RO:
+      access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ;
+      break;
+    case YMPI_BUFFER_TYPE_REMOTE_RW:
+      access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
+      break;
+    case YMPI_BUFFER_TYPE_REMOTE_ATOMIC:
+      access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
+      break;
+    default:
+      LOGD("YMPI_Allocate: unkonwn buffer type.\n");
+      exit(0);
+      return 0;
+  }
+
+  buffer_d = malloc(sizeof(YMPID_Rdma_buffer)); NZ(buffer_d);
+  buffer_d->buf   = buf; NZ(buffer_d->buf);
+  buffer_d->bytes = bytes;
+  buffer_d->mr    = ibv_reg_mr(ctx->pd, buffer_d->buf, bytes, access_flags); NZ(buffer_d->mr);
+  (*buffer) = (uintptr_t) buffer_d;
+
+  return 0;
+}
+
+/*
+  Caution: Ad-hoc implementation that put hard constraint that requires 
+  each invocation of (sendbuf, sendsize, recvbuf, recvsize, comm) stays the same,
+  keeping the cached information valid
+  */
+int YMPI_Alltoall_write_ptr(char* sendbuf, uint64_t sendsize, char* recvbuf, uint64_t recvsize, MPI_Comm comm)
+{
+  int rank, numprocs;
+  MPI_Comm_rank(comm, &rank);
+  MPI_Comm_size(comm, &numprocs);
+
+  YMPI_Rdma_buffer sendbuffer, recvbuffer;
+
+  //if(rank == 0) {
+  //  printf("Calling YMPI_Alltoall_write\n");
+  //}
+  if (_first_call) {
+    size_t bytes = sendsize * numprocs;
+    YMPID_Register(sendbuf, &sendbuffer, bytes * numprocs, YMPI_BUFFER_TYPE_REMOTE_RW);
+    YMPID_Register(recvbuf, &recvbuffer, bytes * numprocs, YMPI_BUFFER_TYPE_REMOTE_RW);
+
+    _first_call = 0;
+    _last_send = sendbuffer;
+    _last_recv = recvbuffer;
+    _last_sendbuf = sendbuf;
+    _last_recvbuf = recvbuf;
+    _last_comm = comm;
+
+    {
+      int my_worldrank;
+      MPI_Comm_rank(MPI_COMM_WORLD, &my_worldrank);
+      uint32_t my_rkey;
+      YMPI_Get_rkey(recvbuffer, &my_rkey);    
+      assert(recvbuf);
+      MPI_Allgather(&my_rkey, 1, MPI_INT, _recv_rkey_list, 1, MPI_INT, comm);
+      MPI_Allgather(&recvbuf, 1, MPI_UNSIGNED_LONG_LONG, _recv_rbuf_list, 1, MPI_UNSIGNED_LONG_LONG, comm);
+      MPI_Allgather(&my_worldrank, 1, MPI_INT, _alltoall_world_ranks, 1, MPI_INT, comm);
+    }
+  } else {
+    assert(_last_sendbuf == sendbuf);
+    assert(_last_recvbuf == recvbuf);
+    assert(_last_comm == comm);
+    sendbuffer = _last_send;
+    recvbuffer = _last_recv;
   }
   assert(sendsize == recvsize);
 
